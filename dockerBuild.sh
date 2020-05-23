@@ -32,7 +32,7 @@ echo "------------------------------------------"
 echo "| Building Container version: ${VERSION} |"
 echo "------------------------------------------"
 
-DTAG="lwahlmeier/rtcp-proxy:${VERSION}"
+DTAG="lwahlmeier/rtsp-proxy:${VERSION}"
 
 docker build . -t ${DTAG}
 
