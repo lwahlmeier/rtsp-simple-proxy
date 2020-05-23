@@ -61,16 +61,11 @@ func readHeader(rb *bufio.Reader) (Header, error) {
 		key += string(byts[:len(byts)-1])
 		key = normalizeHeaderKey(key)
 
-		err = readByteEqual(rb, ' ')
-		if err != nil {
-			return nil, err
-		}
-
 		byts, err = readBytesLimited(rb, '\r', _MAX_HEADER_VALUE_LENGTH)
 		if err != nil {
 			return nil, err
 		}
-		val := string(byts[:len(byts)-1])
+		val := strings.TrimSpace(string(byts[:len(byts)-1]))
 
 		if len(val) == 0 {
 			return nil, fmt.Errorf("empty header value")

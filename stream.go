@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aler9/gortsplib"
+	"github.com/lwahlmeier/gortsplib"
 	"gortc.io/sdp"
 )
 

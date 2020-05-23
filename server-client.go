@@ -8,7 +8,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/aler9/gortsplib"
+	"github.com/lwahlmeier/gortsplib"
 )
 
 func interleavedChannelToTrack(channel uint8) (int, trackFlow) {

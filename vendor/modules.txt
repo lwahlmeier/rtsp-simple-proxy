@@ -7,9 +7,11 @@ github.com/alecthomas/template/parse
 github.com/alecthomas/units
 # github.com/aler9/gortsplib v0.0.0-20200517144705-37bd9a1b98ce
 ## explicit
-github.com/aler9/gortsplib
 # github.com/davecgh/go-spew v1.1.0
 github.com/davecgh/go-spew/spew
+# github.com/lwahlmeier/gortsplib v0.0.0-20200523121056-30f3fd5124cf
+## explicit
+github.com/lwahlmeier/gortsplib
 # github.com/pkg/errors v0.9.1
 github.com/pkg/errors
 # github.com/pmezard/go-difflib v1.0.0

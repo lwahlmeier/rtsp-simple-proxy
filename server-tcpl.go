@@ -5,7 +5,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/aler9/gortsplib"
+	"github.com/lwahlmeier/gortsplib"
 )
 
 type serverTcpListener struct {
