@@ -1,6 +1,6 @@
 module rtsp-simple-proxy
 
-go 1.13
+go 1.14
 
 require (
 	github.com/alecthomas/template v0.0.0-20190718012654-fb15b899a751 // indirect
