@@ -68,7 +68,7 @@ func newServerClient(p *program, nconn net.Conn) *serverClient {
 			WriteTimeout: p.writeTimeout,
 		}),
 		state: _CLIENT_STATE_STARTING,
-		write: make(chan *gortsplib.InterleavedFrame),
+		write: make(chan *gortsplib.InterleavedFrame, 10),
 		done:  make(chan struct{}),
 	}
 

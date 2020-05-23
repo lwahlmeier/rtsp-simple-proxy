@@ -31,7 +31,7 @@ func newServerUdpListener(p *program, port int, flow trackFlow) (*serverUdpListe
 		p:     p,
 		nconn: nconn,
 		flow:  flow,
-		write: make(chan *udpWrite),
+		write: make(chan *udpWrite, 10),
 		done:  make(chan struct{}),
 	}
 
