@@ -45,7 +45,7 @@ func (l *serverTcpListener) run() {
 		if err != nil {
 			break
 		}
-
+		nconn.SetNoDelay(true)
 		newServerClient(l.p, nconn)
 	}
 
