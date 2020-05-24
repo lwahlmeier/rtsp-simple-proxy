@@ -70,7 +70,7 @@ func newStream(p *program, path string, conf streamConf) (*stream, error) {
 		user := ur.User.Username()
 		if user != "" && pass == "" ||
 			user == "" && pass != "" {
-			fmt.Errorf("username and password must be both provided")
+			return nil, fmt.Errorf("username and password must be both provided")
 		}
 	}
 
@@ -568,18 +568,18 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 		for {
 			frame, err := conn.ReadInterleavedFrame()
 			if err != nil {
-				s.log("ERR: %s", err)
+				s.log("TCP Read ERR: %s", err)
 				close(chanConnError)
 				break
 			}
 
-			trackId, trackFlow := interleavedChannelToTrack(frame.Channel)
+			trackID, trackFlow := interleavedChannelToTrack(frame.Channel)
 
 			func() {
 				s.p.tcpl.mutex.RLock()
 				defer s.p.tcpl.mutex.RUnlock()
 
-				s.p.tcpl.forwardTrack(s.path, trackId, trackFlow, frame.Content)
+				s.p.tcpl.forwardTrack(s.path, trackID, trackFlow, frame.Content)
 			}()
 		}
 	}()

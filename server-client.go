@@ -470,14 +470,16 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 			c.p.tcpl.mutex.Lock()
 			defer c.p.tcpl.mutex.Unlock()
 
-			str, ok := c.p.streams[c.path]
+			_, ok := c.p.streams[c.path]
 			if !ok {
 				return fmt.Errorf("no one is streaming on path '%s'", c.path)
 			}
 
-			if len(c.streamTracks) != len(str.serverSdpParsed.Medias) {
-				return fmt.Errorf("not all tracks have been setup")
-			}
+			// Allow not all tracks to be sent
+			// if len(c.streamTracks) != len(str.serverSdpParsed.Medias) {
+			// 	return fmt.Errorf("not all tracks have been setup")
+			// }
+			//TODO: Need to fix so tracks can be sent in any order, if they are done out of order wrong tracks will be sent
 
 			return nil
 		}()

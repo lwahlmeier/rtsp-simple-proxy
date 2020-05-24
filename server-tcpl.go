@@ -74,6 +74,17 @@ func (l *serverTcpListener) close() {
 func (l *serverTcpListener) forwardTrack(path string, id int, flow trackFlow, frame []byte) {
 	for c := range l.clients {
 		if c.path == path && c.state == _CLIENT_STATE_PLAY {
+
+			//Here we skip the track if its not in the list of tracks
+			if len(c.streamTracks)-1 >= id {
+				t := c.streamTracks[id]
+				if t == nil {
+					break
+				}
+			} else {
+				break
+			}
+
 			if c.streamProtocol == _STREAM_PROTOCOL_UDP {
 				if flow == _TRACK_FLOW_RTP {
 					l.p.udplRtp.write <- &udpWrite{
