@@ -4,8 +4,8 @@ github.com/alecthomas/units v0.0.0-20190924025748-f65c72e2690d h1:UQZhZ2O0vMHr2c
 github.com/alecthomas/units v0.0.0-20190924025748-f65c72e2690d/go.mod h1:rBZYJk541a8SKzHPHnH3zbiI+7dagKZ0cgpgrD7Fyho=
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/lwahlmeier/gortsplib v0.0.0-20200523121056-30f3fd5124cf h1:QWnU9+DTQz/TUucAqzbQqJKcSrvYUg3rc1zz3z/SR+A=
-github.com/lwahlmeier/gortsplib v0.0.0-20200523121056-30f3fd5124cf/go.mod h1:WW8HpLsa8po4RyfgLCmeUwjdwbaaU4NNsnNz8j6YCDw=
+github.com/lwahlmeier/gortsplib v0.0.0-20200529130307-1a73c678767a h1:EuvWZiQPbfo403LC67sjuTT/UX3mgotiWqopfpeGyGA=
+github.com/lwahlmeier/gortsplib v0.0.0-20200529130307-1a73c678767a/go.mod h1:WW8HpLsa8po4RyfgLCmeUwjdwbaaU4NNsnNz8j6YCDw=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
@@ -19,5 +19,7 @@ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v2 v2.2.2 h1:ZCJp+EgiOT7lHqUV2J862kp8Qj64Jo6az82+3Td9dZw=
 gopkg.in/yaml.v2 v2.2.2/go.mod h1:hI93XBmqTisBFMUTm0b8Fm+jr3Dg1NNxqwp+5A1VGuI=
+gopkg.in/yaml.v2 v2.3.0 h1:clyUAQHOM3G0M3f5vQj7LuJrETvjVot3Z5el9nffUtU=
+gopkg.in/yaml.v2 v2.3.0/go.mod h1:hI93XBmqTisBFMUTm0b8Fm+jr3Dg1NNxqwp+5A1VGuI=
 gortc.io/sdp v0.18.2 h1:w2L1h9rgMZwGQz/bYMxTQ36POQ114ETpYUX1pFfSsLg=
 gortc.io/sdp v0.18.2/go.mod h1:Oj8tpRIx+Zx6lyrQR9+HHegByfbaz92A9wPSWrQhTI4=

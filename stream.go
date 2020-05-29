@@ -572,9 +572,7 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 				close(chanConnError)
 				break
 			}
-
 			trackID, trackFlow := interleavedChannelToTrack(frame.Channel)
-
 			func() {
 				s.p.tcpl.mutex.RLock()
 				defer s.p.tcpl.mutex.RUnlock()
@@ -584,11 +582,28 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 		}
 	}()
 
-	select {
-	case <-s.terminate:
-		return false
-	case <-chanConnError:
-		return true
+	for {
+		select {
+		case <-time.After(15 * time.Second):
+			s.log("Sending Ping")
+			_, err = conn.WriteRequest(&gortsplib.Request{
+				Method: gortsplib.GET_PARAMETER,
+				Url: &url.URL{
+					Scheme: "rtsp",
+					Host:   s.ur.Host,
+					Path:   "/",
+				},
+			})
+			if err != nil {
+				s.log("ERR: %s", err)
+				return true
+			}
+		case <-s.terminate:
+			return false
+		case <-chanConnError:
+			s.log("Got Close!")
+			return true
+		}
 	}
 }
 

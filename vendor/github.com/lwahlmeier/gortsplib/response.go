@@ -2,8 +2,10 @@ package gortsplib
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // StatusCode is the status code of a RTSP response.
@@ -129,6 +131,35 @@ type Response struct {
 
 	// optional content
 	Content []byte
+}
+
+func (r *Response) String() string {
+	return fmt.Sprintf("%d %s %s %s", r.StatusCode, r.StatusMessage, r.Header.String(), string(r.Content))
+}
+
+func readResponseFromBytes(hs []byte) (*Response, error) {
+	res := &Response{}
+	erhpos := bytes.Index(hs, []byte("\r\n"))
+	rh := strings.SplitN(string(hs[:erhpos]), " ", 3)
+	if len(rh) < 3 {
+		return nil, fmt.Errorf("unable to parse status code")
+	}
+	statusCode64, err := strconv.ParseInt(rh[1], 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse status code")
+	}
+	res.StatusCode = StatusCode(statusCode64)
+	res.StatusMessage = rh[2]
+	ehpos := bytes.Index(hs, []byte(HEADER_END))
+	res.Header, err = readHeaderFromString(string(hs[erhpos+2 : ehpos]))
+	if err != nil {
+		return nil, err
+	}
+	cl, _ := res.Header.getContentLength()
+	if cl > 0 && cl <= len(hs)-ehpos+4 {
+		res.Content = hs[ehpos+4 : ehpos+4+cl]
+	}
+	return res, nil
 }
 
 func readResponse(br *bufio.Reader) (*Response, error) {

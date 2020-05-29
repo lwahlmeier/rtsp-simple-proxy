@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +31,33 @@ func normalizeHeaderKey(in string) string {
 
 // Header is a RTSP reader, present in both Requests and Responses.
 type Header map[string][]string
+
+func (h *Header) getContentLength() (int, error) {
+	hd := *h
+	cls, ok := hd["Content-Length"]
+	if !ok || len(cls) != 1 {
+		return 0, nil
+	}
+
+	cl, err := strconv.ParseInt(cls[0], 10, 64)
+	if err != nil {
+		return -1, err
+	}
+	return int(cl), nil
+}
+
+func (h *Header) String() string {
+	sb := strings.Builder{}
+	for k, v := range *h {
+		for _, v2 := range v {
+			sb.WriteString(k)
+			sb.WriteString(": ")
+			sb.WriteString(v2)
+			sb.WriteString("\r\n")
+		}
+	}
+	return sb.String()
+}
 
 func readHeader(rb *bufio.Reader) (Header, error) {
 	h := make(Header)
@@ -79,6 +107,35 @@ func readHeader(rb *bufio.Reader) (Header, error) {
 		h[key] = append(h[key], val)
 	}
 
+	return h, nil
+}
+
+func getContentLength(hs string) (int, error) {
+	headers := strings.Split(hs, "\r\n")
+	for _, hl := range headers {
+		hkv := strings.Split(hl, ":")
+		if strings.ToLower(hkv[0]) == "content-length" {
+			cl, err := strconv.ParseInt(strings.TrimSpace(hkv[1]), 10, 64)
+			if err != nil {
+				return -1, err
+			}
+			return int(cl), nil
+		}
+	}
+	return 0, nil
+}
+
+func readHeaderFromString(hs string) (Header, error) {
+	h := make(Header)
+	headers := strings.Split(hs, "\r\n")
+	for _, hl := range headers {
+		hkv := strings.Split(hl, ":")
+		key := normalizeHeaderKey(strings.TrimSpace(hkv[0]))
+		val := strings.TrimSpace(hkv[1])
+		if len(val) > 0 {
+			h[key] = append(h[key], val)
+		}
+	}
 	return h, nil
 }
 
