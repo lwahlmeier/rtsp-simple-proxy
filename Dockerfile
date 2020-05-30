@@ -14,5 +14,5 @@ EXPOSE 8051/udp
 
 
 ENTRYPOINT ["/run.sh"]
-CMD ["/rtsp-proxy", "/config.yaml"]
+CMD ["/rtsp-proxy", "--config", "/config.yaml"]
 
