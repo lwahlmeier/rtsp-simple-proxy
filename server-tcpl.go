@@ -1,12 +1,19 @@
 package main
 
 import (
-	"log"
 	"net"
 	"sync"
 
+	"github.com/PremiereGlobal/stim/pkg/stimlog"
 	"github.com/lwahlmeier/gortsplib"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+var tcpConnections = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "total_tcp_connections",
+	Help: "The total number tcp connections",
+})
 
 type serverTcpListener struct {
 	p       *program
@@ -14,6 +21,7 @@ type serverTcpListener struct {
 	mutex   sync.RWMutex
 	clients map[*serverClient]struct{}
 	done    chan struct{}
+	log     stimlog.StimLogger
 }
 
 func newServerTcpListener(p *program) (*serverTcpListener, error) {
@@ -29,14 +37,11 @@ func newServerTcpListener(p *program) (*serverTcpListener, error) {
 		nconn:   nconn,
 		clients: make(map[*serverClient]struct{}),
 		done:    make(chan struct{}),
+		log:     stimlog.GetLoggerWithPrefix("[TCP listener]"),
 	}
 
-	l.log("opened on :%d", p.conf.Server.RtspPort)
+	l.log.Info("opened on :{}", p.conf.Server.RtspPort)
 	return l, nil
-}
-
-func (l *serverTcpListener) log(format string, args ...interface{}) {
-	log.Printf("[TCP listener] "+format, args...)
 }
 
 func (l *serverTcpListener) run() {
@@ -45,6 +50,7 @@ func (l *serverTcpListener) run() {
 		if err != nil {
 			break
 		}
+		tcpConnections.Inc()
 		nconn.SetNoDelay(true)
 		newServerClient(l.p, nconn)
 	}
@@ -52,8 +58,8 @@ func (l *serverTcpListener) run() {
 	// close clients
 	var doneChans []chan struct{}
 	func() {
-		l.mutex.Lock()
-		defer l.mutex.Unlock()
+		l.mutex.RLock()
+		defer l.mutex.RUnlock()
 		for c := range l.clients {
 			c.close()
 			doneChans = append(doneChans, c.done)
@@ -72,6 +78,9 @@ func (l *serverTcpListener) close() {
 }
 
 func (l *serverTcpListener) forwardTrack(path string, id int, flow trackFlow, frame []byte) {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+
 	for c := range l.clients {
 		if c.path == path && c.state == _CLIENT_STATE_PLAY {
 

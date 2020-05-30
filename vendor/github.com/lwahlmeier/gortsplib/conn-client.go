@@ -61,6 +61,7 @@ type ConnClient struct {
 	rtspData  chan *RTSPResponse
 	frameData chan *FrameResponse
 	readError error
+	conn      net.Conn
 }
 
 // NewConnClient allocates a ConnClient. See ConnClientConf for the options.
@@ -87,8 +88,9 @@ func NewConnClient(conf ConnClientConf) (*ConnClient, error) {
 		conf:      conf,
 		br:        bufio.NewReaderSize(conf.NConn, conf.ReadBufferSize),
 		bw:        bufio.NewWriterSize(conf.NConn, conf.WriteBufferSize),
+		conn:      conf.NConn,
 		rtspData:  make(chan *RTSPResponse),
-		frameData: make(chan *FrameResponse),
+		frameData: make(chan *FrameResponse, 10),
 	}
 	go cc.doRead()
 	return cc, nil
@@ -96,10 +98,9 @@ func NewConnClient(conf ConnClientConf) (*ConnClient, error) {
 
 func (c *ConnClient) doRead() {
 	readBuff := make([]byte, 4096)
-	pendingBuff := make([]byte, 0, 4096)
+	pendingBuff := bytes.Buffer{}
 	for {
-		c.conf.NConn.SetReadDeadline(time.Now().Add(c.conf.ReadTimeout))
-		n, err := c.br.Read(readBuff)
+		n, err := c.conn.Read(readBuff)
 		if err != nil {
 			fmt.Printf("Got Read Error %s\n", err)
 			select {
@@ -109,24 +110,25 @@ func (c *ConnClient) doRead() {
 			return
 		}
 		if n > 0 {
-			pendingBuff = append(pendingBuff, readBuff[:n]...)
-			for len(pendingBuff) > 0 {
-				if pendingBuff[0] == 0x24 {
-					if len(pendingBuff) >= 4 {
-						framelen := int(binary.BigEndian.Uint16(pendingBuff[2:]))
+			pendingBuff.Write(readBuff[:n])
+			for pendingBuff.Len() > 0 {
+				tmpBuff := pendingBuff.Bytes()
+				if tmpBuff[0] == 0x24 {
+					if pendingBuff.Len() >= 4 {
+						framelen := int(binary.BigEndian.Uint16(tmpBuff[2:]))
 						if framelen > _INTERLEAVED_FRAME_MAX_SIZE {
 							fmt.Printf("frame Error\n")
 							c.frameData <- &FrameResponse{Frame: nil, Error: fmt.Errorf("Got interleaved frame that was to large")}
 							return
-						} else if framelen > len(pendingBuff)-4 {
+						} else if framelen > len(tmpBuff)-4 {
 							break
 						} else {
 							f := &InterleavedFrame{
-								Channel: pendingBuff[1],
+								Channel: tmpBuff[1],
 								Content: make([]byte, framelen),
 							}
-							copy(f.Content, pendingBuff[4:framelen+4])
-							pendingBuff = pendingBuff[framelen+4:]
+							pendingBuff.Next(4)
+							pendingBuff.Read(f.Content)
 							select {
 							case c.frameData <- &FrameResponse{Frame: f, Error: nil}:
 							case <-time.After(10 * time.Millisecond):
@@ -137,25 +139,24 @@ func (c *ConnClient) doRead() {
 						break
 					}
 				} else {
-					pos := bytes.Index(pendingBuff, []byte(HEADER_END))
+					pos := bytes.Index(tmpBuff, []byte(HEADER_END))
 					if pos > -1 {
-						cl, err := getContentLength(string(pendingBuff[:pos]))
+						cl, err := getContentLength(string(tmpBuff[:pos]))
 						if err != nil {
 							fmt.Printf("Reading RTSP err1:%s\n", err)
 							c.rtspData <- &RTSPResponse{Response: nil, Error: err}
 							return
 						}
-						if cl+pos+4 > len(pendingBuff) {
+						if cl+pos+4 > len(tmpBuff) {
 							break
 						}
-
-						r, err := readResponseFromBytes(pendingBuff[:pos+4+cl])
+						r, err := readResponseFromBytes(tmpBuff[:pos+4+cl])
 						if err != nil {
 							fmt.Printf("Reading RTSP err2:%s\n", err)
 							c.rtspData <- &RTSPResponse{Response: nil, Error: err}
 							return
 						}
-						pendingBuff = pendingBuff[cl+pos+4:]
+						pendingBuff.Next(cl + pos + 4)
 						select {
 						case c.rtspData <- &RTSPResponse{Response: r, Error: nil}:
 						case <-time.After(10 * time.Millisecond):
@@ -245,5 +246,5 @@ func (c *ConnClient) ReadInterleavedFrame() (*InterleavedFrame, error) {
 // WriteInterleavedFrame writes an InterleavedFrame.
 func (c *ConnClient) WriteInterleavedFrame(frame *InterleavedFrame) error {
 	c.conf.NConn.SetWriteDeadline(time.Now().Add(c.conf.WriteTimeout))
-	return frame.write(c.bw)
+	return frame.write(c.conn)
 }

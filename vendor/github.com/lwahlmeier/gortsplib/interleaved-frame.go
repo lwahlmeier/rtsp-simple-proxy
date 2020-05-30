@@ -1,7 +1,6 @@
 package gortsplib
 
 import (
-	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -50,23 +49,17 @@ func readInterleavedFrame(r io.Reader) (*InterleavedFrame, error) {
 	return f, nil
 }
 
-func (f *InterleavedFrame) write(bw *bufio.Writer) error {
-	_, err := bw.Write([]byte{0x24, f.Channel})
+func (f *InterleavedFrame) write(bw io.Writer) error {
+	bh := make([]byte, 4+len(f.Content))
+	bh[0] = 0x24
+	bh[1] = f.Channel
+	binary.BigEndian.PutUint16(bh[2:4], uint16(len(f.Content)))
+	copy(bh[4:], f.Content)
+
+	_, err := bw.Write(bh)
 	if err != nil {
 		return err
 	}
 
-	buf := make([]byte, 2)
-	binary.BigEndian.PutUint16(buf, uint16(len(f.Content)))
-	_, err = bw.Write(buf)
-	if err != nil {
-		return err
-	}
-
-	_, err = bw.Write(f.Content)
-	if err != nil {
-		return err
-	}
-
-	return bw.Flush()
+	return nil
 }

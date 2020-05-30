@@ -157,7 +157,9 @@ func readResponseFromBytes(hs []byte) (*Response, error) {
 	}
 	cl, _ := res.Header.getContentLength()
 	if cl > 0 && cl <= len(hs)-ehpos+4 {
-		res.Content = hs[ehpos+4 : ehpos+4+cl]
+		b := make([]byte, cl)
+		copy(b, hs[ehpos+4:ehpos+4+cl])
+		res.Content = b
 	}
 	return res, nil
 }

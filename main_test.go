@@ -1,240 +1,172 @@
 package main
 
 import (
-	"bytes"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"testing"
-	"time"
 
-	"github.com/stretchr/testify/require"
+	"github.com/spf13/viper"
 )
 
-type container struct {
-	name   string
-	stdout *bytes.Buffer
+func TestNoConfigFile(t *testing.T) {
+	Expected := "open : no such file or directory"
+	config := viper.New()
+	p, err := newProgram(config)
+	if err.Error() != Expected {
+		t.Errorf("Error actual = %v, and Expected = %v.", err, Expected)
+	}
+	if p != nil {
+		t.Errorf("Should not have newProgram")
+	}
 }
 
-func newContainer(image string, name string, args []string) (*container, error) {
-	c := &container{
-		name:   name,
-		stdout: bytes.NewBuffer(nil),
-	}
-
-	exec.Command("docker", "kill", "rtsp-simple-proxy-test-"+name).Run()
-	exec.Command("docker", "wait", "rtsp-simple-proxy-test-"+name).Run()
-
-	cmd := []string{"docker", "run", "--network=host",
-		"--name=rtsp-simple-proxy-test-" + name,
-		"rtsp-simple-proxy-test-" + image}
-	cmd = append(cmd, args...)
-	ecmd := exec.Command(cmd[0], cmd[1:]...)
-
-	ecmd.Stdout = c.stdout
-	ecmd.Stderr = os.Stderr
-
-	err := ecmd.Start()
+func TestEmptyConfigFile(t *testing.T) {
+	Expected := "EOF"
+	cf, err := ioutil.TempFile("/tmp/", "testing")
 	if err != nil {
-		return nil, err
+		t.Errorf("Could not create tmp file:%v", err)
 	}
-
-	time.Sleep(1 * time.Second)
-
-	return c, nil
-}
-
-func (c *container) close() {
-	exec.Command("docker", "kill", "rtsp-simple-proxy-test-"+c.name).Run()
-	exec.Command("docker", "wait", "rtsp-simple-proxy-test-"+c.name).Run()
-	exec.Command("docker", "rm", "rtsp-simple-proxy-test-"+c.name).Run()
-}
-
-func (c *container) wait() {
-	exec.Command("docker", "wait", "rtsp-simple-proxy-test-"+c.name).Run()
-}
-
-func TestProtocols(t *testing.T) {
-	for _, pair := range [][2]string{
-		{"udp", "udp"},
-		{"udp", "tcp"},
-		{"tcp", "udp"},
-		{"tcp", "tcp"},
-	} {
-		t.Run(pair[0]+"_"+pair[1], func(t *testing.T) {
-			cnt1, err := newContainer("rtsp-simple-server", "server", []string{})
-			require.NoError(t, err)
-			defer cnt1.close()
-
-			time.Sleep(1 * time.Second)
-
-			cnt2, err := newContainer("ffmpeg", "source", []string{
-				"-hide_banner",
-				"-loglevel", "panic",
-				"-re",
-				"-stream_loop", "-1",
-				"-i", "/emptyvideo.ts",
-				"-c", "copy",
-				"-f", "rtsp",
-				"-rtsp_transport", "udp",
-				"rtsp://localhost:8554/teststream",
-			})
-			require.NoError(t, err)
-			defer cnt2.close()
-
-			time.Sleep(1 * time.Second)
-
-			ioutil.WriteFile("conf.yml", []byte("\n"+
-				"server:\n"+
-				"  protocols: [ "+pair[1]+" ]\n"+
-				"  rtspPort: 8555\n"+
-				"\n"+
-				"streams:\n"+
-				"  testproxy:\n"+
-				"    url: rtsp://localhost:8554/teststream\n"+
-				"    protocol: "+pair[0]+"\n"),
-				0644)
-
-			p, err := newProgram([]string{})
-			require.NoError(t, err)
-			defer p.close()
-
-			time.Sleep(1 * time.Second)
-
-			cnt3, err := newContainer("ffmpeg", "dest", []string{
-				"-hide_banner",
-				"-loglevel", "panic",
-				"-rtsp_transport", pair[1],
-				"-i", "rtsp://localhost:8555/testproxy",
-				"-vframes", "1",
-				"-f", "image2",
-				"-y", "/dev/null",
-			})
-			require.NoError(t, err)
-			defer cnt3.close()
-
-			cnt3.wait()
-
-			require.Equal(t, "all right\n", string(cnt3.stdout.Bytes()))
-		})
+	defer os.Remove(cf.Name())
+	config := viper.New()
+	config.SetDefault("config", cf.Name())
+	p, err := newProgram(config)
+	if err.Error() != Expected {
+		t.Errorf("Error actual = %v, and Expected = %v.", err, Expected)
+	}
+	if p != nil {
+		t.Errorf("Should not have newProgram")
 	}
 }
 
-func TestStreamAuth(t *testing.T) {
-	cnt1, err := newContainer("rtsp-simple-server", "server", []string{
-		"--read-user=testuser",
-		"--read-pass=testpass",
-	})
-	require.NoError(t, err)
-	defer cnt1.close()
-
-	time.Sleep(1 * time.Second)
-
-	cnt2, err := newContainer("ffmpeg", "source", []string{
-		"-hide_banner",
-		"-loglevel", "panic",
-		"-re",
-		"-stream_loop", "-1",
-		"-i", "/emptyvideo.ts",
-		"-c", "copy",
-		"-f", "rtsp",
-		"-rtsp_transport", "udp",
-		"rtsp://localhost:8554/teststream",
-	})
-	require.NoError(t, err)
-	defer cnt2.close()
-
-	time.Sleep(1 * time.Second)
-
-	ioutil.WriteFile("conf.yml", []byte("\n"+
-		"server:\n"+
-		"  protocols: [ udp ]\n"+
-		"  rtspPort: 8555\n"+
-		"\n"+
-		"streams:\n"+
-		"  testproxy:\n"+
-		"    url: rtsp://testuser:testpass@localhost:8554/teststream\n"+
-		"    protocol: udp\n"),
-		0644)
-
-	p, err := newProgram([]string{})
-	require.NoError(t, err)
-	defer p.close()
-
-	time.Sleep(1 * time.Second)
-
-	cnt3, err := newContainer("ffmpeg", "dest", []string{
-		"-hide_banner",
-		"-loglevel", "panic",
-		"-rtsp_transport", "udp",
-		"-i", "rtsp://localhost:8555/testproxy",
-		"-vframes", "1",
-		"-f", "image2",
-		"-y", "/dev/null",
-	})
-	require.NoError(t, err)
-	defer cnt3.close()
-
-	cnt3.wait()
-
-	require.Equal(t, "all right\n", string(cnt3.stdout.Bytes()))
+func TestEmptyJsonConfigFile(t *testing.T) {
+	Expected := "no streams provided"
+	cf, err := ioutil.TempFile("/tmp/", "testing")
+	if err != nil {
+		t.Errorf("Could not create tmp file:%v", err)
+	}
+	defer os.Remove(cf.Name())
+	cf.WriteString("{}")
+	config := viper.New()
+	config.SetDefault("config", cf.Name())
+	p, err := newProgram(config)
+	if err.Error() != Expected {
+		t.Errorf("Error actual = %v, and Expected = %v.", err, Expected)
+	}
+	if p != nil {
+		t.Errorf("Should not have newProgram")
+	}
 }
 
-func TestServerAuth(t *testing.T) {
-	cnt1, err := newContainer("rtsp-simple-server", "server", []string{})
-	require.NoError(t, err)
-	defer cnt1.close()
+func TestBadReadTimeConfigFile(t *testing.T) {
+	Expected := "unable to parse read timeout: time: invalid duration xddas"
+	cf, err := ioutil.TempFile("/tmp/", "testing")
+	if err != nil {
+		t.Errorf("Could not create tmp file:%v", err)
+	}
+	defer os.Remove(cf.Name())
+	cf.WriteString("readTimeout: xddas\n")
+	config := viper.New()
+	config.SetDefault("config", cf.Name())
+	p, err := newProgram(config)
+	if err.Error() != Expected {
+		t.Errorf("Error actual = %v, and Expected = %v.", err, Expected)
+	}
+	if p != nil {
+		t.Errorf("Should not have newProgram")
+	}
+}
 
-	time.Sleep(1 * time.Second)
+func TestBadWriteTimeConfigFile(t *testing.T) {
+	Expected := "unable to parse write timeout: time: invalid duration xddas"
+	cf, err := ioutil.TempFile("/tmp/", "testing")
+	if err != nil {
+		t.Errorf("Could not create tmp file:%v", err)
+	}
+	defer os.Remove(cf.Name())
+	cf.WriteString("writeTimeout: xddas\n")
+	config := viper.New()
+	config.SetDefault("config", cf.Name())
+	p, err := newProgram(config)
+	if err.Error() != Expected {
+		t.Errorf("Error actual = %v, and Expected = %v.", err, Expected)
+	}
+	if p != nil {
+		t.Errorf("Should not have newProgram")
+	}
+}
 
-	cnt2, err := newContainer("ffmpeg", "source", []string{
-		"-hide_banner",
-		"-loglevel", "panic",
-		"-re",
-		"-stream_loop", "-1",
-		"-i", "/emptyvideo.ts",
-		"-c", "copy",
-		"-f", "rtsp",
-		"-rtsp_transport", "udp",
-		"rtsp://localhost:8554/teststream",
-	})
-	require.NoError(t, err)
-	defer cnt2.close()
+func TestBadStreamProtosConfigFile(t *testing.T) {
+	Expected := "unsupported protocol: 'xddas'"
+	cf, err := ioutil.TempFile("/tmp/", "testing")
+	if err != nil {
+		t.Errorf("Could not create tmp file:%v", err)
+	}
+	defer os.Remove(cf.Name())
+	cf.WriteString("server:\n  protocols: [xddas]\n")
+	config := viper.New()
+	config.SetDefault("config", cf.Name())
+	p, err := newProgram(config)
+	if err.Error() != Expected {
+		t.Errorf("Error actual = %v, and Expected = %v.", err, Expected)
+	}
+	if p != nil {
+		t.Errorf("Should not have newProgram")
+	}
+}
 
-	time.Sleep(1 * time.Second)
+// func TestNoStreamProtoConfigFile(t *testing.T) {
+// 	Expected := "no protocols provided"
+// 	cf, err := ioutil.TempFile("/tmp/", "testing")
+// 	if err != nil {
+// 		t.Errorf("Could not create tmp file:%v", err)
+// 	}
+// 	defer os.Remove(cf.Name())
+// 	cf.WriteString("server:\n  protocols: []\n")
+// 	config := viper.New()
+// 	config.SetDefault("config", cf.Name())
+// 	p, err := newProgram(config)
+// 	if err.Error() != Expected {
+// 		t.Errorf("Error actual = %v, and Expected = %v.", err, Expected)
+// 	}
+// 	if p != nil {
+// 		t.Errorf("Should not have newProgram")
+// 	}
+// }
 
-	ioutil.WriteFile("conf.yml", []byte("\n"+
-		"server:\n"+
-		"  protocols: [ udp ]\n"+
-		"  rtspPort: 8555\n"+
-		"  readUser: testuser\n"+
-		"  readPass: testpass\n"+
-		"\n"+
-		"streams:\n"+
-		"  testproxy:\n"+
-		"    url: rtsp://localhost:8554/teststream\n"+
-		"    protocol: udp\n"),
-		0644)
+func TestOddRTPConfigFile(t *testing.T) {
+	Expected := "rtp port must be even"
+	cf, err := ioutil.TempFile("/tmp/", "testing")
+	if err != nil {
+		t.Errorf("Could not create tmp file:%v", err)
+	}
+	defer os.Remove(cf.Name())
+	cf.WriteString("server:\n  rtpPort: 443\n")
+	config := viper.New()
+	config.SetDefault("config", cf.Name())
+	p, err := newProgram(config)
+	if err.Error() != Expected {
+		t.Errorf("Error actual = %v, and Expected = %v.", err, Expected)
+	}
+	if p != nil {
+		t.Errorf("Should not have newProgram")
+	}
+}
 
-	p, err := newProgram([]string{})
-	require.NoError(t, err)
-	defer p.close()
-
-	time.Sleep(1 * time.Second)
-
-	cnt3, err := newContainer("ffmpeg", "dest", []string{
-		"-hide_banner",
-		"-loglevel", "panic",
-		"-rtsp_transport", "udp",
-		"-i", "rtsp://testuser:testpass@localhost:8555/testproxy",
-		"-vframes", "1",
-		"-f", "image2",
-		"-y", "/dev/null",
-	})
-	require.NoError(t, err)
-	defer cnt3.close()
-
-	cnt3.wait()
-
-	require.Equal(t, "all right\n", string(cnt3.stdout.Bytes()))
+func TestCrazyRTCPConfigFile(t *testing.T) {
+	Expected := "rtcp port must be rtp port plus 1"
+	cf, err := ioutil.TempFile("/tmp/", "testing")
+	if err != nil {
+		t.Errorf("Could not create tmp file:%v", err)
+	}
+	defer os.Remove(cf.Name())
+	cf.WriteString("server:\n  rtpPort: 444\n  rtcpPort: 3323")
+	config := viper.New()
+	config.SetDefault("config", cf.Name())
+	p, err := newProgram(config)
+	if err.Error() != Expected {
+		t.Errorf("Error actual = %v, and Expected = %v.", err, Expected)
+	}
+	if p != nil {
+		t.Errorf("Should not have newProgram")
+	}
 }

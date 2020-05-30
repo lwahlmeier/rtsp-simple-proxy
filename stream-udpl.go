@@ -89,12 +89,7 @@ func (l *streamUdpListener) run() {
 			continue
 		}
 
-		func() {
-			l.p.tcpl.mutex.RLock()
-			defer l.p.tcpl.mutex.RUnlock()
-
-			l.p.tcpl.forwardTrack(l.path, l.trackId, l.flow, buf[:n])
-		}()
+		l.p.tcpl.forwardTrack(l.path, l.trackId, l.flow, buf[:n])
 		// a new buffer slice is needed for each read.
 		// this is necessary since the buffer is propagated with channels
 		// so it must be unique.

@@ -4,12 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strings"
 
+	"github.com/PremiereGlobal/stim/pkg/stimlog"
 	"github.com/lwahlmeier/gortsplib"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+var rtspConnections = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "total_rtsp_connections",
+	Help: "The total number rtsp connections",
+})
 
 func interleavedChannelToTrack(channel uint8) (int, trackFlow) {
 	if (channel % 2) == 0 {
@@ -53,10 +60,12 @@ type serverClient struct {
 	state          clientState
 	path           string
 	readAuth       *gortsplib.AuthServer
+	stream         *stream
 	streamProtocol streamProtocol
 	streamTracks   []*track
 	write          chan *gortsplib.InterleavedFrame
 	done           chan struct{}
+	log            stimlog.StimLogger
 }
 
 func newServerClient(p *program, nconn net.Conn) *serverClient {
@@ -70,19 +79,33 @@ func newServerClient(p *program, nconn net.Conn) *serverClient {
 		state: _CLIENT_STATE_STARTING,
 		write: make(chan *gortsplib.InterleavedFrame, 10),
 		done:  make(chan struct{}),
+		log:   stimlog.GetLoggerWithPrefix("[RTSP client " + nconn.RemoteAddr().String() + "]"),
 	}
 
-	c.p.tcpl.mutex.Lock()
+	c.p.tcpl.mutex.RLock()
 	c.p.tcpl.clients[c] = struct{}{}
-	c.p.tcpl.mutex.Unlock()
+	c.p.tcpl.mutex.RUnlock()
 
 	go c.run()
 
 	return c
 }
 
+func (c *serverClient) SetState(state clientState) {
+	c.p.tcpl.mutex.RLock()
+	defer c.p.tcpl.mutex.RUnlock()
+	c.state = state
+}
+
+func (c *serverClient) GetState() clientState {
+	c.p.tcpl.mutex.RLock()
+	defer c.p.tcpl.mutex.RUnlock()
+	return c.state
+}
+
 func (c *serverClient) close() error {
-	// already deleted
+	c.p.tcpl.mutex.RLock()
+	defer c.p.tcpl.mutex.RUnlock()
 	if _, ok := c.p.tcpl.clients[c]; !ok {
 		return nil
 	}
@@ -94,12 +117,6 @@ func (c *serverClient) close() error {
 	return nil
 }
 
-func (c *serverClient) log(format string, args ...interface{}) {
-	// keep remote address outside format, since it can contain %
-	log.Println("[RTSP client " + c.conn.NetConn().RemoteAddr().String() + "] " +
-		fmt.Sprintf(format, args...))
-}
-
 func (c *serverClient) ip() net.IP {
 	return c.conn.NetConn().RemoteAddr().(*net.TCPAddr).IP
 }
@@ -109,13 +126,13 @@ func (c *serverClient) zone() string {
 }
 
 func (c *serverClient) run() {
-	c.log("connected")
+	c.log.Info("connected")
 
 	for {
 		req, err := c.conn.ReadRequest()
 		if err != nil {
 			if err != io.EOF {
-				c.log("ERR: %s", err)
+				c.log.Warn(err)
 			}
 			break
 		}
@@ -126,19 +143,15 @@ func (c *serverClient) run() {
 		}
 	}
 
-	func() {
-		c.p.tcpl.mutex.Lock()
-		defer c.p.tcpl.mutex.Unlock()
-		c.close()
-	}()
+	c.close()
 
-	c.log("disconnected")
+	c.log.Info("disconnected")
 
 	close(c.done)
 }
 
 func (c *serverClient) writeResError(req *gortsplib.Request, code gortsplib.StatusCode, err error) {
-	c.log("ERR: %s", err)
+	c.log.Warn(err)
 
 	header := gortsplib.Header{}
 	if cseq, ok := req.Header["CSeq"]; ok && len(cseq) == 1 {
@@ -168,7 +181,7 @@ func (c *serverClient) validateAuth(req *gortsplib.Request, user string, pass st
 	err := (*auth).ValidateHeader(req.Header["Authorization"], req.Method, req.Url)
 	if err != nil {
 		if !initialRequest {
-			c.log("ERR: Unauthorized: %s", err)
+			c.log.Warn("Unauthorized: {}", err)
 		}
 
 		c.conn.WriteResponse(&gortsplib.Response{
@@ -190,7 +203,9 @@ func (c *serverClient) validateAuth(req *gortsplib.Request, user string, pass st
 }
 
 func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
-	c.log(string(req.Method))
+	c.log.Info(string(req.Method))
+
+	var ok bool = false
 
 	cseq, ok := req.Header["CSeq"]
 	if !ok || len(cseq) != 1 {
@@ -198,21 +213,21 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 		return false
 	}
 
-	path := func() string {
-		ret := req.Url.Path
-
-		// remove leading slash
-		if len(ret) > 1 {
-			ret = ret[1:]
+	if c.path == "" {
+		tp := strings.Split(strings.Trim(req.Url.Path, "/"), "/")
+		c.stream, ok = c.p.streams[tp[0]]
+		if !ok {
+			c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("there is no stream on path '%s'", tp[0]))
+			return false
 		}
+		c.path = tp[0]
+	}
 
-		// strip any subpath
-		if n := strings.Index(ret, "/"); n >= 0 {
-			ret = ret[:n]
-		}
-
-		return ret
-	}()
+	if c.stream.GetState() != _STREAM_STATE_READY {
+		c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("stream '%s' is not ready yet", c.path))
+		return false
+	}
+	sdp := c.stream.serverSdpText
 
 	switch req.Method {
 	case gortsplib.OPTIONS:
@@ -235,9 +250,9 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 		return true
 
 	case gortsplib.DESCRIBE:
-		if c.state != _CLIENT_STATE_STARTING {
+		if c.GetState() != _CLIENT_STATE_STARTING {
 			c.writeResError(req, gortsplib.StatusBadRequest,
-				fmt.Errorf("client is in state '%s' instead of '%s'", c.state, _CLIENT_STATE_STARTING))
+				fmt.Errorf("client is in state '%s' instead of '%s'", c.GetState(), _CLIENT_STATE_STARTING))
 			return false
 		}
 
@@ -247,26 +262,6 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 				return false
 			}
 			return true
-		}
-
-		sdp, err := func() ([]byte, error) {
-			c.p.tcpl.mutex.RLock()
-			defer c.p.tcpl.mutex.RUnlock()
-
-			str, ok := c.p.streams[path]
-			if !ok {
-				return nil, fmt.Errorf("there is no stream on path '%s'", path)
-			}
-
-			if str.state != _STREAM_STATE_READY {
-				return nil, fmt.Errorf("stream '%s' is not ready yet", path)
-			}
-
-			return str.serverSdpText, nil
-		}()
-		if err != nil {
-			c.writeResError(req, gortsplib.StatusBadRequest, err)
-			return false
 		}
 
 		c.conn.WriteResponse(&gortsplib.Response{
@@ -294,7 +289,7 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 			return false
 		}
 
-		switch c.state {
+		switch c.GetState() {
 		// play
 		case _CLIENT_STATE_STARTING, _CLIENT_STATE_PRE_PLAY:
 			err := c.validateAuth(req, c.p.conf.Server.ReadUser, c.p.conf.Server.ReadPass, &c.readAuth)
@@ -305,18 +300,9 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 				return true
 			}
 
-			// play via UDP
-			if func() bool {
-				_, ok := th["RTP/AVP"]
-				if ok {
-					return true
-				}
-				_, ok = th["RTP/AVP/UDP"]
-				if ok {
-					return true
-				}
-				return false
-			}() {
+			_, ok1 := th["RTP/AVP"]
+			_, ok2 := th["RTP/AVP/UDP"]
+			if ok1 || ok2 {
 				if _, ok := c.p.protocols[_STREAM_PROTOCOL_UDP]; !ok {
 					c.writeResError(req, gortsplib.StatusUnsupportedTransport, fmt.Errorf("UDP streaming is disabled"))
 					return false
@@ -328,46 +314,21 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 					return false
 				}
 
-				if c.path != "" && path != c.path {
-					c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("path has changed"))
+				if len(c.streamTracks) > 0 && c.streamProtocol != _STREAM_PROTOCOL_UDP {
+					c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("client want to send tracks with different protocols"))
 					return false
 				}
 
-				err := func() error {
-					c.p.tcpl.mutex.Lock()
-					defer c.p.tcpl.mutex.Unlock()
-
-					str, ok := c.p.streams[path]
-					if !ok {
-						return fmt.Errorf("there is no stream on path '%s'", path)
-					}
-
-					if str.state != _STREAM_STATE_READY {
-						return fmt.Errorf("stream '%s' is not ready yet", path)
-					}
-
-					if len(c.streamTracks) > 0 && c.streamProtocol != _STREAM_PROTOCOL_UDP {
-						return fmt.Errorf("client want to send tracks with different protocols")
-					}
-
-					if len(c.streamTracks) >= len(str.serverSdpParsed.Medias) {
-						return fmt.Errorf("all the tracks have already been setup")
-					}
-
-					c.path = path
-					c.streamProtocol = _STREAM_PROTOCOL_UDP
-					c.streamTracks = append(c.streamTracks, &track{
-						rtpPort:  rtpPort,
-						rtcpPort: rtcpPort,
-					})
-
-					c.state = _CLIENT_STATE_PRE_PLAY
-					return nil
-				}()
-				if err != nil {
-					c.writeResError(req, gortsplib.StatusBadRequest, err)
+				if len(c.streamTracks) >= len(c.stream.serverSdpParsed.Medias) {
+					c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("all the tracks have already been setup"))
 					return false
 				}
+				c.streamProtocol = _STREAM_PROTOCOL_UDP
+				c.streamTracks = append(c.streamTracks, &track{
+					rtpPort:  rtpPort,
+					rtcpPort: rtcpPort,
+				})
+				c.SetState(_CLIENT_STATE_PRE_PLAY)
 
 				c.conn.WriteResponse(&gortsplib.Response{
 					StatusCode: gortsplib.StatusOK,
@@ -390,43 +351,22 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 					c.writeResError(req, gortsplib.StatusUnsupportedTransport, fmt.Errorf("TCP streaming is disabled"))
 					return false
 				}
-
-				if c.path != "" && path != c.path {
-					c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("path has changed"))
+				if len(c.streamTracks) > 0 && c.streamProtocol != _STREAM_PROTOCOL_TCP {
+					c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("client want to send tracks with different protocols"))
+					return false
+				}
+				if len(c.streamTracks) >= len(c.stream.serverSdpParsed.Medias) {
+					c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("all the tracks have already been setup"))
 					return false
 				}
 
-				err := func() error {
-					c.p.tcpl.mutex.Lock()
-					defer c.p.tcpl.mutex.Unlock()
+				c.streamProtocol = _STREAM_PROTOCOL_TCP
+				c.streamTracks = append(c.streamTracks, &track{
+					rtpPort:  0,
+					rtcpPort: 0,
+				})
 
-					str, ok := c.p.streams[path]
-					if !ok {
-						return fmt.Errorf("there is no stream on path '%s'", path)
-					}
-
-					if len(c.streamTracks) > 0 && c.streamProtocol != _STREAM_PROTOCOL_TCP {
-						return fmt.Errorf("client want to send tracks with different protocols")
-					}
-
-					if len(c.streamTracks) >= len(str.serverSdpParsed.Medias) {
-						return fmt.Errorf("all the tracks have already been setup")
-					}
-
-					c.path = path
-					c.streamProtocol = _STREAM_PROTOCOL_TCP
-					c.streamTracks = append(c.streamTracks, &track{
-						rtpPort:  0,
-						rtcpPort: 0,
-					})
-
-					c.state = _CLIENT_STATE_PRE_PLAY
-					return nil
-				}()
-				if err != nil {
-					c.writeResError(req, gortsplib.StatusBadRequest, err)
-					return false
-				}
+				c.SetState(_CLIENT_STATE_PRE_PLAY)
 
 				interleaved := fmt.Sprintf("%d-%d", ((len(c.streamTracks) - 1) * 2), ((len(c.streamTracks)-1)*2)+1)
 
@@ -455,38 +395,16 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 		}
 
 	case gortsplib.PLAY:
-		if c.state != _CLIENT_STATE_PRE_PLAY {
-			c.writeResError(req, gortsplib.StatusBadRequest,
-				fmt.Errorf("client is in state '%s' instead of '%s'", c.state, _CLIENT_STATE_PRE_PLAY))
+		if c.GetState() != _CLIENT_STATE_PRE_PLAY {
+			c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("client is in state '%s' instead of '%s'", c.state, _CLIENT_STATE_PRE_PLAY))
 			return false
 		}
 
-		if path != c.path {
-			c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("path has changed"))
-			return false
-		}
-
-		err := func() error {
-			c.p.tcpl.mutex.Lock()
-			defer c.p.tcpl.mutex.Unlock()
-
-			_, ok := c.p.streams[c.path]
-			if !ok {
-				return fmt.Errorf("no one is streaming on path '%s'", c.path)
-			}
-
-			// Allow not all tracks to be sent
-			// if len(c.streamTracks) != len(str.serverSdpParsed.Medias) {
-			// 	return fmt.Errorf("not all tracks have been setup")
-			// }
-			//TODO: Need to fix so tracks can be sent in any order, if they are done out of order wrong tracks will be sent
-
-			return nil
-		}()
-		if err != nil {
-			c.writeResError(req, gortsplib.StatusBadRequest, err)
-			return false
-		}
+		// Allow not all tracks to be sent
+		// if len(c.streamTracks) != len(str.serverSdpParsed.Medias) {
+		// 	return fmt.Errorf("not all tracks have been setup")
+		// }
+		//TODO: Need to fix so tracks can be sent in any order, if they are done out of order wrong tracks will be sent
 
 		// first write response, then set state
 		// otherwise, in case of TCP connections, RTP packets could be written
@@ -499,33 +417,31 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 			},
 		})
 
-		c.log("is receiving on path '%s', %d %s via %s", c.path, len(c.streamTracks), func() string {
-			if len(c.streamTracks) == 1 {
-				return "track"
-			}
-			return "tracks"
-		}(), c.streamProtocol)
+		c.log.Info("is receiving on path '{}', {} tracks via {}", c.path, len(c.streamTracks), c.streamProtocol)
 
-		c.p.tcpl.mutex.Lock()
-		c.state = _CLIENT_STATE_PLAY
-		c.p.tcpl.mutex.Unlock()
+		c.SetState(_CLIENT_STATE_PLAY)
 
 		// when protocol is TCP, the RTSP connection becomes a RTP connection
 		if c.streamProtocol == _STREAM_PROTOCOL_TCP {
 			// write RTP frames sequentially
 			go func() {
-				for frame := range c.write {
-					c.conn.WriteInterleavedFrame(frame)
+				for {
+					frame, alive := <-c.write
+					if alive {
+						c.conn.WriteInterleavedFrame(frame)
+					} else {
+						break
+					}
 				}
 			}()
 
-			// receive RTP feedback, do not parse it, wait until connection closes
+			// TODO: we should still be parsing RTSP here allowing it to go back to main reader
 			buf := make([]byte, 2048)
 			for {
 				_, err := c.conn.NetConn().Read(buf)
 				if err != nil {
 					if err != io.EOF {
-						c.log("ERR: %s", err)
+						c.log.Warn(err)
 					}
 					return false
 				}
@@ -536,21 +452,13 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 
 	case gortsplib.PAUSE:
 		if c.state != _CLIENT_STATE_PLAY {
-			c.writeResError(req, gortsplib.StatusBadRequest,
-				fmt.Errorf("client is in state '%s' instead of '%s'", c.state, _CLIENT_STATE_PLAY))
+			c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("client is in state '%s' instead of '%s'", c.state, _CLIENT_STATE_PLAY))
 			return false
 		}
 
-		if path != c.path {
-			c.writeResError(req, gortsplib.StatusBadRequest, fmt.Errorf("path has changed"))
-			return false
-		}
+		c.log.Info("paused")
 
-		c.log("paused")
-
-		c.p.tcpl.mutex.Lock()
-		c.state = _CLIENT_STATE_PRE_PLAY
-		c.p.tcpl.mutex.Unlock()
+		c.SetState(_CLIENT_STATE_PRE_PLAY)
 
 		c.conn.WriteResponse(&gortsplib.Response{
 			StatusCode: gortsplib.StatusOK,

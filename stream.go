@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"math/rand"
 	"net"
 	"net/url"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PremiereGlobal/stim/pkg/stimlog"
 	"github.com/lwahlmeier/gortsplib"
 	"gortc.io/sdp"
 )
@@ -47,6 +47,7 @@ type stream struct {
 	firstTime       bool
 	terminate       chan struct{}
 	done            chan struct{}
+	log             stimlog.StimLogger
 }
 
 func newStream(p *program, path string, conf streamConf) (*stream, error) {
@@ -98,14 +99,15 @@ func newStream(p *program, path string, conf streamConf) (*stream, error) {
 		firstTime: true,
 		terminate: make(chan struct{}),
 		done:      make(chan struct{}),
+		log:       stimlog.GetLoggerWithPrefix("[STREAM " + path + "]"),
 	}
-
 	return s, nil
 }
 
-func (s *stream) log(format string, args ...interface{}) {
-	format = "[STREAM " + s.path + "] " + format
-	log.Printf(format, args...)
+func (s *stream) GetState() streamState {
+	s.p.tcpl.mutex.Lock()
+	defer s.p.tcpl.mutex.Unlock()
+	return s.state
 }
 
 func (s *stream) run() {
@@ -131,7 +133,7 @@ func (s *stream) do() bool {
 		}
 	}
 
-	s.log("initializing with protocol %s", s.proto)
+	s.log.Info("initializing with protocol {}", s.proto)
 
 	var nconn net.Conn
 	var err error
@@ -148,7 +150,7 @@ func (s *stream) do() bool {
 	}
 
 	if err != nil {
-		s.log("ERR: %s", err)
+		s.log.Warn(err)
 		return true
 	}
 	defer nconn.Close()
@@ -172,7 +174,7 @@ func (s *stream) do() bool {
 		WriteTimeout: s.p.writeTimeout,
 	})
 	if err != nil {
-		s.log("ERR: %s", err)
+		s.log.Warn(err)
 		return true
 	}
 
@@ -185,12 +187,12 @@ func (s *stream) do() bool {
 		},
 	})
 	if err != nil {
-		s.log("ERR: %s", err)
+		s.log.Warn(err)
 		return true
 	}
 
 	if res.StatusCode != gortsplib.StatusOK {
-		s.log("ERR: OPTIONS returned code %d (%s)", res.StatusCode, res.StatusMessage)
+		s.log.Warn("OPTIONS returned code {} ({})", res.StatusCode, res.StatusMessage)
 		return true
 	}
 
@@ -204,29 +206,29 @@ func (s *stream) do() bool {
 		},
 	})
 	if err != nil {
-		s.log("ERR: %s", err)
+		s.log.Warn(err)
 		return true
 	}
 
 	if res.StatusCode != gortsplib.StatusOK {
-		s.log("ERR: DESCRIBE returned code %d (%s)", res.StatusCode, res.StatusMessage)
+		s.log.Warn("DESCRIBE returned code {} ({})", res.StatusCode, res.StatusMessage)
 		return true
 	}
 
 	contentType, ok := res.Header["Content-Type"]
 	if !ok || len(contentType) != 1 {
-		s.log("ERR: Content-Type not provided")
+		s.log.Warn("Content-Type not provided")
 		return true
 	}
 
 	if contentType[0] != "application/sdp" {
-		s.log("ERR: wrong Content-Type, expected application/sdp")
+		s.log.Warn("wrong Content-Type, expected application/sdp")
 		return true
 	}
 
 	clientSdpParsed, err := gortsplib.SDPParse(res.Content)
 	if err != nil {
-		s.log("ERR: invalid SDP: %s", err)
+		s.log.Warn("invalid SDP: {}", err)
 		return true
 	}
 
@@ -321,14 +323,14 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 			},
 		})
 		if err != nil {
-			s.log("ERR: %s", err)
+			s.log.Warn(err)
 			udplRtp.close()
 			udplRtcp.close()
 			return true
 		}
 
 		if res.StatusCode != gortsplib.StatusOK {
-			s.log("ERR: SETUP returned code %d (%s)", res.StatusCode, res.StatusMessage)
+			s.log.Warn("SETUP returned code {} ({})", res.StatusCode, res.StatusMessage)
 			udplRtp.close()
 			udplRtcp.close()
 			return true
@@ -336,7 +338,7 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 
 		tsRaw, ok := res.Header["Transport"]
 		if !ok || len(tsRaw) != 1 {
-			s.log("ERR: transport header not provided")
+			s.log.Warn("transport header not provided")
 			udplRtp.close()
 			udplRtcp.close()
 			return true
@@ -345,7 +347,7 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 		th := gortsplib.ReadHeaderTransport(tsRaw[0])
 		rtpServerPort, rtcpServerPort := th.GetPorts("server_port")
 		if rtpServerPort == 0 {
-			s.log("ERR: server ports not provided")
+			s.log.Warn("server ports not provided")
 			udplRtp.close()
 			udplRtcp.close()
 			return true
@@ -379,12 +381,12 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 		},
 	})
 	if err != nil {
-		s.log("ERR: %s", err)
+		s.log.Warn(err)
 		return true
 	}
 
 	if res.StatusCode != gortsplib.StatusOK {
-		s.log("ERR: PLAY returned code %d (%s)", res.StatusCode, res.StatusMessage)
+		s.log.Warn("PLAY returned code {} ({})", res.StatusCode, res.StatusMessage)
 		return true
 	}
 
@@ -418,7 +420,7 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 		}
 	}()
 
-	s.log("ready")
+	s.log.Info("ready")
 
 	for {
 		select {
@@ -435,7 +437,7 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 				},
 			})
 			if err != nil {
-				s.log("ERR: %s", err)
+				s.log.Warn(err)
 				return true
 			}
 
@@ -456,7 +458,7 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 			}
 
 			if time.Since(lastFrameTime) >= _STREAM_DEAD_AFTER {
-				s.log("ERR: stream is dead")
+				s.log.Warn("stream is dead")
 				return true
 			}
 		}
@@ -499,18 +501,18 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 			},
 		})
 		if err != nil {
-			s.log("ERR: %s", err)
+			s.log.Warn(err)
 			return true
 		}
 
 		if res.StatusCode != gortsplib.StatusOK {
-			s.log("ERR: SETUP returned code %d (%s)", res.StatusCode, res.StatusMessage)
+			s.log.Warn("SETUP returned code {} ({})", res.StatusCode, res.StatusMessage)
 			return true
 		}
 
 		tsRaw, ok := res.Header["Transport"]
 		if !ok || len(tsRaw) != 1 {
-			s.log("ERR: transport header not provided")
+			s.log.Warn("transport header not provided")
 			return true
 		}
 
@@ -518,7 +520,7 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 
 		_, ok = th[interleaved]
 		if !ok {
-			s.log("ERR: transport header does not have %s (%s)", interleaved, tsRaw[0])
+			s.log.Warn("transport header does not have {} ({})", interleaved, tsRaw[0])
 			return true
 		}
 	}
@@ -533,12 +535,12 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 		},
 	})
 	if err != nil {
-		s.log("ERR: %s", err)
+		s.log.Warn(err)
 		return true
 	}
 
 	if res.StatusCode != gortsplib.StatusOK {
-		s.log("ERR: PLAY returned code %d (%s)", res.StatusCode, res.StatusMessage)
+		s.log.Warn("PLAY returned code {} ({})", res.StatusCode, res.StatusMessage)
 		return true
 	}
 
@@ -561,31 +563,26 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 		}
 	}()
 
-	s.log("ready")
+	s.log.Info("ready")
 
 	chanConnError := make(chan struct{})
 	go func() {
 		for {
 			frame, err := conn.ReadInterleavedFrame()
 			if err != nil {
-				s.log("TCP Read ERR: %s", err)
+				s.log.Warn("TCP Read ERR: {}", err)
 				close(chanConnError)
 				break
 			}
 			trackID, trackFlow := interleavedChannelToTrack(frame.Channel)
-			func() {
-				s.p.tcpl.mutex.RLock()
-				defer s.p.tcpl.mutex.RUnlock()
-
-				s.p.tcpl.forwardTrack(s.path, trackID, trackFlow, frame.Content)
-			}()
+			s.p.tcpl.forwardTrack(s.path, trackID, trackFlow, frame.Content)
 		}
 	}()
 
 	for {
 		select {
 		case <-time.After(15 * time.Second):
-			s.log("Sending Ping")
+			s.log.Info("Sending Ping")
 			_, err = conn.WriteRequest(&gortsplib.Request{
 				Method: gortsplib.GET_PARAMETER,
 				Url: &url.URL{
@@ -595,13 +592,13 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 				},
 			})
 			if err != nil {
-				s.log("ERR: %s", err)
+				s.log.Warn(err)
 				return true
 			}
 		case <-s.terminate:
 			return false
 		case <-chanConnError:
-			s.log("Got Close!")
+			s.log.Warn("Got Close!")
 			return true
 		}
 	}

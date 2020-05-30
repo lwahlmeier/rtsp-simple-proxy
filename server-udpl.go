@@ -1,9 +1,9 @@
 package main
 
 import (
-	"log"
 	"net"
-	"time"
+
+	"github.com/PremiereGlobal/stim/pkg/stimlog"
 )
 
 type udpWrite struct {
@@ -17,6 +17,7 @@ type serverUdpListener struct {
 	flow  trackFlow
 	write chan *udpWrite
 	done  chan struct{}
+	log   stimlog.StimLogger
 }
 
 func newServerUdpListener(p *program, port int, flow trackFlow) (*serverUdpListener, error) {
@@ -27,32 +28,28 @@ func newServerUdpListener(p *program, port int, flow trackFlow) (*serverUdpListe
 		return nil, err
 	}
 
+	var label string
+	if flow == _TRACK_FLOW_RTP {
+		label = "RTP"
+	} else {
+		label = "RTCP"
+	}
 	l := &serverUdpListener{
 		p:     p,
 		nconn: nconn,
 		flow:  flow,
 		write: make(chan *udpWrite, 10),
 		done:  make(chan struct{}),
+		log:   stimlog.GetLoggerWithPrefix("[UDP/" + label + " listener]"),
 	}
 
-	l.log("opened on :%d", port)
+	l.log.Info("opened on :{}", port)
 	return l, nil
-}
-
-func (l *serverUdpListener) log(format string, args ...interface{}) {
-	var label string
-	if l.flow == _TRACK_FLOW_RTP {
-		label = "RTP"
-	} else {
-		label = "RTCP"
-	}
-	log.Printf("[UDP/"+label+" listener] "+format, args...)
 }
 
 func (l *serverUdpListener) run() {
 	go func() {
 		for w := range l.write {
-			l.nconn.SetWriteDeadline(time.Now().Add(l.p.writeTimeout))
 			l.nconn.WriteTo(w.buf, w.addr)
 		}
 	}()

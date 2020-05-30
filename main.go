@@ -2,15 +2,25 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
+	"strings"
 	"time"
 
-	"gopkg.in/alecthomas/kingpin.v2"
+	"github.com/PremiereGlobal/stim/pkg/stimlog"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"gopkg.in/yaml.v2"
 )
 
-var Version string = "v0.0.0"
+var Version string
+var config = viper.New()
+
+var log2 stimlog.StimLogger = stimlog.GetLogger() //Fix for deadlock
+var log stimlog.StimLogger = stimlog.GetLoggerWithPrefix("[Main]")
 
 type trackFlow int
 
@@ -100,29 +110,27 @@ type program struct {
 	udplRtcp     *serverUdpListener
 }
 
-func newProgram(sargs []string) (*program, error) {
-	kingpin.CommandLine.Help = "rtsp-simple-proxy " + Version + "\n\n" +
-		"RTSP proxy."
-
-	argVersion := kingpin.Flag("version", "print version").Bool()
-	argConfPath := kingpin.Arg("confpath", "path of a config file. The default is conf.yml. Use 'stdin' to read config from stdin").Default("conf.yml").String()
-
-	kingpin.MustParse(kingpin.CommandLine.Parse(sargs))
-
-	args := args{
-		version:  *argVersion,
-		confPath: *argConfPath,
-	}
-
-	if args.version == true {
-		fmt.Println(Version)
+func parseArgs(cmd *cobra.Command, args []string) {
+	if config.GetBool("version") {
+		fmt.Printf("%s\n", Version)
 		os.Exit(0)
 	}
-
-	conf, err := loadConf(args.confPath)
-	if err != nil {
-		return nil, err
+	lc := stimlog.GetLoggerConfig()
+	switch strings.ToLower(config.GetString("loglevel")) {
+	case "info":
+		lc.SetLevel(stimlog.InfoLevel)
+	case "warn":
+		lc.SetLevel(stimlog.WarnLevel)
+	case "debug":
+		lc.SetLevel(stimlog.DebugLevel)
+	case "trace":
+		lc.SetLevel(stimlog.TraceLevel)
 	}
+}
+
+func newProgram(config *viper.Viper) (*program, error) {
+
+	conf, err := loadConf(config.GetString("config"))
 	if err != nil {
 		return nil, err
 	}
@@ -167,9 +175,7 @@ func newProgram(sargs []string) (*program, error) {
 			return nil, fmt.Errorf("unsupported protocol: '%v'", proto)
 		}
 	}
-	if len(protocols) == 0 {
-		return nil, fmt.Errorf("no protocols provided")
-	}
+
 	if (conf.Server.RtpPort % 2) != 0 {
 		return nil, fmt.Errorf("rtp port must be even")
 	}
@@ -180,7 +186,7 @@ func newProgram(sargs []string) (*program, error) {
 		return nil, fmt.Errorf("no streams provided")
 	}
 
-	log.Printf("rtsp-simple-proxy %s", Version)
+	log.Info("rtsp-simple-proxy {}", Version)
 
 	p := &program{
 		conf:         *conf,
@@ -188,14 +194,6 @@ func newProgram(sargs []string) (*program, error) {
 		writeTimeout: writeTimeout,
 		protocols:    protocols,
 		streams:      make(map[string]*stream),
-	}
-
-	for path, val := range p.conf.Streams {
-		var err error
-		p.streams[path], err = newStream(p, path, val)
-		if err != nil {
-			return nil, fmt.Errorf("error in stream '%s': %s", path, err)
-		}
 	}
 
 	p.udplRtp, err = newServerUdpListener(p, p.conf.Server.RtpPort, _TRACK_FLOW_RTP)
@@ -213,6 +211,14 @@ func newProgram(sargs []string) (*program, error) {
 		return nil, err
 	}
 
+	for path, val := range p.conf.Streams {
+		var err error
+		p.streams[path], err = newStream(p, path, val)
+		if err != nil {
+			return nil, fmt.Errorf("error in stream '%s': %s", path, err)
+		}
+	}
+
 	for _, s := range p.streams {
 		go s.run()
 	}
@@ -220,7 +226,6 @@ func newProgram(sargs []string) (*program, error) {
 	go p.udplRtp.run()
 	go p.udplRtcp.run()
 	go p.tcpl.run()
-
 	return p, nil
 }
 
@@ -235,11 +240,45 @@ func (p *program) close() {
 }
 
 func main() {
-	_, err := newProgram(os.Args[1:])
-	if err != nil {
-		log.Fatal("ERR: ", err)
+	lc := stimlog.GetLoggerConfig()
+	lc.SetLevel(stimlog.InfoLevel)
+	lc.ForceFlush(true)
+
+	config.SetEnvPrefix("rtsp")
+	config.AutomaticEnv()
+	if Version == "" || Version == "lastest" {
+		Version = "unknown"
+	}
+	var cmd = &cobra.Command{
+		Use:   "rtsp-simple-proxy",
+		Short: "rtsp-simple-proxy",
+		Long:  "rtsp-simple-proxy",
+		Run:   parseArgs,
 	}
 
-	infty := make(chan struct{})
-	<-infty
+	cmd.PersistentFlags().String("config", "config.yaml", "Config file path")
+	config.BindPFlag("config", cmd.PersistentFlags().Lookup("config"))
+	cmd.PersistentFlags().String("metricsPort", "9347", "prometheus metrics port")
+	config.BindPFlag("metricsPort", cmd.PersistentFlags().Lookup("metricsPort"))
+	cmd.PersistentFlags().String("metricsIP", "", "IP to listen to metrics on (default is 0.0.0.0 or all IPs)")
+	config.BindPFlag("metricsIP", cmd.PersistentFlags().Lookup("metricsIP"))
+	cmd.PersistentFlags().String("loglevel", "info", "level to show logs at (warn, info, debug, trace)")
+	config.BindPFlag("loglevel", cmd.PersistentFlags().Lookup("loglevel"))
+	cmd.PersistentFlags().Bool("version", false, "prints the version the exits")
+	config.BindPFlag("version", cmd.PersistentFlags().Lookup("version"))
+
+	cmd.Execute()
+	p, err := newProgram(config)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	mip := config.GetString("metricsIP")
+	if mip == "0.0.0.0" {
+		mip = ""
+	}
+	mipp := fmt.Sprintf("%s:%s", mip, config.GetString("metricsPort"))
+	http.Handle("/metrics", promhttp.Handler())
+	http.ListenAndServe(mipp, nil)
+	p.close()
 }

@@ -33,6 +33,7 @@ type ConnServer struct {
 	conf ConnServerConf
 	br   *bufio.Reader
 	bw   *bufio.Writer
+	conn net.Conn
 }
 
 // NewConnServer allocates a ConnClient.
@@ -49,11 +50,12 @@ func NewConnServer(conf ConnServerConf) *ConnServer {
 	if conf.WriteBufferSize == 0 {
 		conf.WriteBufferSize = 4096
 	}
-
+	conf.NConn.SetReadDeadline(time.Time{})
 	return &ConnServer{
 		conf: conf,
 		br:   bufio.NewReaderSize(conf.NConn, conf.ReadBufferSize),
 		bw:   bufio.NewWriterSize(conf.NConn, conf.ReadBufferSize),
+		conn: conf.NConn,
 	}
 }
 
@@ -64,7 +66,6 @@ func (s *ConnServer) NetConn() net.Conn {
 
 // ReadRequest reads a Request.
 func (s *ConnServer) ReadRequest() (*Request, error) {
-	s.conf.NConn.SetReadDeadline(time.Time{}) // disable deadline
 	return readRequest(s.br)
 }
 
@@ -77,11 +78,11 @@ func (s *ConnServer) WriteResponse(res *Response) error {
 // ReadInterleavedFrame reads an InterleavedFrame.
 func (s *ConnServer) ReadInterleavedFrame() (*InterleavedFrame, error) {
 	s.conf.NConn.SetReadDeadline(time.Now().Add(s.conf.ReadTimeout))
-	return readInterleavedFrame(s.br)
+	return readInterleavedFrame(s.conf.NConn)
 }
 
 // WriteInterleavedFrame writes an InterleavedFrame.
 func (s *ConnServer) WriteInterleavedFrame(frame *InterleavedFrame) error {
 	s.conf.NConn.SetWriteDeadline(time.Now().Add(s.conf.WriteTimeout))
-	return frame.write(s.bw)
+	return frame.write(s.conf.NConn)
 }
