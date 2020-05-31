@@ -61,14 +61,14 @@ func (l *serverTcpListener) removeServerClient(sc *serverClient) {
 }
 
 func (l *serverTcpListener) closeClientsOnPath(path string) {
-	l.clients.Each(func(i interface{}) bool {
+	clients := l.clients.ToSlice()
+	for _, i := range clients {
 		c := i.(*serverClient)
 		_, _, _, cPath := c.GetClientInfo()
 		if cPath == path {
-			c.close()
+			defer c.close()
 		}
-		return false
-	})
+	}
 }
 
 func (l *serverTcpListener) run() {
@@ -83,11 +83,11 @@ func (l *serverTcpListener) run() {
 
 	}
 
-	l.clients.Each(func(i interface{}) bool {
+	clients := l.clients.ToSlice()
+	for _, i := range clients {
 		c := i.(*serverClient)
 		c.close()
-		return false
-	})
+	}
 
 }
 
@@ -99,28 +99,27 @@ func (l *serverTcpListener) close() {
 		close(l.done)
 	}
 	l.nconn.Close()
-	l.clients.Each(func(i interface{}) bool {
+	clients := l.clients.ToSlice()
+	for _, i := range clients {
 		c := i.(*serverClient)
 		c.close()
-		return false
-	})
+	}
 
 }
 
 func (l *serverTcpListener) forwardTrack(path string, id int, flow trackFlow, frame []byte) {
-	// l.mutex.RLock()
-	// defer l.mutex.RUnlock()
-	l.clients.Each(func(i interface{}) bool {
+	clients := l.clients.ToSlice()
+	for _, i := range clients {
 		c := i.(*serverClient)
 		state, streamProtocol, streamTracks, cPath := c.GetClientInfo()
 		if cPath == path && state == _CLIENT_STATE_PLAY {
 			if len(streamTracks)-1 >= id {
 				t := streamTracks[id]
 				if t == nil {
-					return false
+					continue
 				}
 			} else {
-				return false
+				continue
 			}
 			if streamProtocol == _STREAM_PROTOCOL_UDP {
 				if flow == _TRACK_FLOW_RTP {
@@ -162,7 +161,5 @@ func (l *serverTcpListener) forwardTrack(path string, id int, flow trackFlow, fr
 				}
 			}
 		}
-		return false
-	})
-
+	}
 }

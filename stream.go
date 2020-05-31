@@ -563,7 +563,7 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 				},
 			})
 			if err != nil {
-				s.log.Warn(err)
+				s.log.Warn("Read error pinging:{}", err)
 				return true
 			}
 		case <-s.terminate:
@@ -583,5 +583,4 @@ func (s *stream) close() {
 		close(s.done)
 	}
 	close(s.terminate)
-
 }
