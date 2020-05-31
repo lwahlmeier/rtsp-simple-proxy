@@ -580,7 +580,8 @@ func (s *stream) close() {
 	case <-s.done:
 		return
 	default:
+		close(s.done)
 	}
 	close(s.terminate)
-	close(s.done)
+
 }

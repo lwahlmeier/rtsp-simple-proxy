@@ -96,6 +96,7 @@ func (l *serverTcpListener) close() {
 	case <-l.done:
 		return
 	default:
+		close(l.done)
 	}
 	l.nconn.Close()
 	l.clients.Each(func(i interface{}) bool {
@@ -103,7 +104,7 @@ func (l *serverTcpListener) close() {
 		c.close()
 		return false
 	})
-	close(l.done)
+
 }
 
 func (l *serverTcpListener) forwardTrack(path string, id int, flow trackFlow, frame []byte) {

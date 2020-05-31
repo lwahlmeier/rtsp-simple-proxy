@@ -128,11 +128,11 @@ func (c *serverClient) close() error {
 	case <-c.done:
 		return nil
 	default:
+		close(c.done)
 	}
 	c.p.tcpl.removeServerClient(c)
 	c.conn.NetConn().Close()
 	close(c.write)
-	close(c.done)
 
 	return nil
 }

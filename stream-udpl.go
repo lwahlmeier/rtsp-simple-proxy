@@ -53,9 +53,9 @@ func (l *streamUdpListener) close() {
 	case <-l.done:
 		return
 	default:
+		close(l.done)
 	}
 	l.nconn.Close()
-	close(l.done)
 }
 
 func (l *streamUdpListener) start() {

@@ -70,8 +70,9 @@ func (l *serverUdpListener) close() {
 	case <-l.done:
 		return
 	default:
+		close(l.done)
 	}
 	l.nconn.Close()
 	close(l.write)
-	close(l.done)
+
 }
