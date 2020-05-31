@@ -570,7 +570,7 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 		for {
 			frame, err := conn.ReadInterleavedFrame()
 			if err != nil {
-				s.log.Warn("TCP Read ERR: {}", err)
+				s.log.Warn("ReadInterleavedFrame ERR: {}", err)
 				close(chanConnError)
 				break
 			}

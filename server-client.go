@@ -428,8 +428,15 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 				for {
 					frame, alive := <-c.write
 					if alive {
-						c.conn.WriteInterleavedFrame(frame)
+						err := c.conn.WriteInterleavedFrame(frame)
+						if err != nil {
+							c.log.Warn("Client write error: {}", err)
+							c.close()
+							break
+						}
 					} else {
+						c.log.Info("Exiting Write Loop")
+						c.close()
 						break
 					}
 				}

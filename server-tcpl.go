@@ -96,29 +96,38 @@ func (l *serverTcpListener) forwardTrack(path string, id int, flow trackFlow, fr
 
 			if c.streamProtocol == _STREAM_PROTOCOL_UDP {
 				if flow == _TRACK_FLOW_RTP {
-					l.p.udplRtp.write <- &udpWrite{
+					select {
+					case l.p.udplRtp.write <- &udpWrite{
 						addr: &net.UDPAddr{
 							IP:   c.ip(),
 							Zone: c.zone(),
 							Port: c.streamTracks[id].rtpPort,
 						},
 						buf: frame,
+					}:
+					default:
 					}
 				} else {
-					l.p.udplRtcp.write <- &udpWrite{
+					select {
+					case l.p.udplRtcp.write <- &udpWrite{
 						addr: &net.UDPAddr{
 							IP:   c.ip(),
 							Zone: c.zone(),
 							Port: c.streamTracks[id].rtcpPort,
 						},
 						buf: frame,
+					}:
+					default:
 					}
 				}
 
 			} else {
-				c.write <- &gortsplib.InterleavedFrame{
+				select {
+				case c.write <- &gortsplib.InterleavedFrame{
 					Channel: trackToInterleavedChannel(id, flow),
 					Content: frame,
+				}:
+				default:
 				}
 			}
 		}
