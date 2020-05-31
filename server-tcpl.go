@@ -4,6 +4,8 @@ import (
 	"net"
 	"sync"
 
+	sets "github.com/deckarep/golang-set"
+
 	"github.com/PremiereGlobal/stim/pkg/stimlog"
 	"github.com/lwahlmeier/gortsplib"
 	"github.com/prometheus/client_golang/prometheus"
@@ -11,15 +13,21 @@ import (
 )
 
 var tcpConnections = promauto.NewCounter(prometheus.CounterOpts{
-	Name: "total_tcp_connections",
+	Name: "tcp_connections_total",
 	Help: "The total number tcp connections",
 })
 
+var skippedFrames = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "skipped_frames_total",
+	Help: "The total of frames skipped",
+})
+
 type serverTcpListener struct {
-	p       *program
-	nconn   *net.TCPListener
-	mutex   sync.RWMutex
-	clients map[*serverClient]struct{}
+	p     *program
+	nconn *net.TCPListener
+	mutex sync.RWMutex
+	// clients map[*serverClient]struct{}
+	clients sets.Set
 	done    chan struct{}
 	log     stimlog.StimLogger
 }
@@ -33,15 +41,34 @@ func newServerTcpListener(p *program) (*serverTcpListener, error) {
 	}
 
 	l := &serverTcpListener{
-		p:       p,
-		nconn:   nconn,
-		clients: make(map[*serverClient]struct{}),
+		p:     p,
+		nconn: nconn,
+		// clients: make(map[*serverClient]struct{}),
+		clients: sets.NewSet(),
 		done:    make(chan struct{}),
 		log:     stimlog.GetLoggerWithPrefix("[TCP listener]"),
 	}
 
 	l.log.Info("opened on :{}", p.conf.Server.RtspPort)
 	return l, nil
+}
+
+func (l *serverTcpListener) addServerClient(sc *serverClient) {
+	l.clients.Add(sc)
+}
+func (l *serverTcpListener) removeServerClient(sc *serverClient) {
+	l.clients.Remove(sc)
+}
+
+func (l *serverTcpListener) closeClientsOnPath(path string) {
+	l.clients.Each(func(i interface{}) bool {
+		c := i.(*serverClient)
+		_, _, _, cPath := c.GetClientInfo()
+		if cPath == path {
+			c.close()
+		}
+		return false
+	})
 }
 
 func (l *serverTcpListener) run() {
@@ -53,59 +80,60 @@ func (l *serverTcpListener) run() {
 		tcpConnections.Inc()
 		nconn.SetNoDelay(true)
 		newServerClient(l.p, nconn)
+
 	}
 
-	// close clients
-	var doneChans []chan struct{}
-	func() {
-		l.mutex.RLock()
-		defer l.mutex.RUnlock()
-		for c := range l.clients {
-			c.close()
-			doneChans = append(doneChans, c.done)
-		}
-	}()
-	for _, c := range doneChans {
-		<-c
-	}
+	l.clients.Each(func(i interface{}) bool {
+		c := i.(*serverClient)
+		c.close()
+		return false
+	})
 
-	close(l.done)
 }
 
 func (l *serverTcpListener) close() {
+	select {
+	case <-l.done:
+		return
+	default:
+	}
 	l.nconn.Close()
-	<-l.done
+	l.clients.Each(func(i interface{}) bool {
+		c := i.(*serverClient)
+		c.close()
+		return false
+	})
+	close(l.done)
 }
 
 func (l *serverTcpListener) forwardTrack(path string, id int, flow trackFlow, frame []byte) {
-	l.mutex.RLock()
-	defer l.mutex.RUnlock()
-
-	for c := range l.clients {
-		if c.path == path && c.state == _CLIENT_STATE_PLAY {
-
-			//Here we skip the track if its not in the list of tracks
-			if len(c.streamTracks)-1 >= id {
-				t := c.streamTracks[id]
+	// l.mutex.RLock()
+	// defer l.mutex.RUnlock()
+	l.clients.Each(func(i interface{}) bool {
+		c := i.(*serverClient)
+		state, streamProtocol, streamTracks, cPath := c.GetClientInfo()
+		if cPath == path && state == _CLIENT_STATE_PLAY {
+			if len(streamTracks)-1 >= id {
+				t := streamTracks[id]
 				if t == nil {
-					break
+					return false
 				}
 			} else {
-				break
+				return false
 			}
-
-			if c.streamProtocol == _STREAM_PROTOCOL_UDP {
+			if streamProtocol == _STREAM_PROTOCOL_UDP {
 				if flow == _TRACK_FLOW_RTP {
 					select {
 					case l.p.udplRtp.write <- &udpWrite{
 						addr: &net.UDPAddr{
 							IP:   c.ip(),
 							Zone: c.zone(),
-							Port: c.streamTracks[id].rtpPort,
+							Port: streamTracks[id].rtpPort,
 						},
 						buf: frame,
 					}:
 					default:
+						skippedFrames.Inc()
 					}
 				} else {
 					select {
@@ -113,11 +141,12 @@ func (l *serverTcpListener) forwardTrack(path string, id int, flow trackFlow, fr
 						addr: &net.UDPAddr{
 							IP:   c.ip(),
 							Zone: c.zone(),
-							Port: c.streamTracks[id].rtcpPort,
+							Port: streamTracks[id].rtcpPort,
 						},
 						buf: frame,
 					}:
 					default:
+						skippedFrames.Inc()
 					}
 				}
 
@@ -128,8 +157,11 @@ func (l *serverTcpListener) forwardTrack(path string, id int, flow trackFlow, fr
 					Content: frame,
 				}:
 				default:
+					skippedFrames.Inc()
 				}
 			}
 		}
-	}
+		return false
+	})
+
 }

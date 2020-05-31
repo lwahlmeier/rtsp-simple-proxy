@@ -38,7 +38,7 @@ func newServerUdpListener(p *program, port int, flow trackFlow) (*serverUdpListe
 		p:     p,
 		nconn: nconn,
 		flow:  flow,
-		write: make(chan *udpWrite, 10),
+		write: make(chan *udpWrite, 100),
 		done:  make(chan struct{}),
 		log:   stimlog.GetLoggerWithPrefix("[UDP/" + label + " listener]"),
 	}
@@ -62,12 +62,16 @@ func (l *serverUdpListener) run() {
 		}
 	}
 
-	close(l.write)
-
-	close(l.done)
+	l.close()
 }
 
 func (l *serverUdpListener) close() {
+	select {
+	case <-l.done:
+		return
+	default:
+	}
 	l.nconn.Close()
-	<-l.done
+	close(l.write)
+	close(l.done)
 }

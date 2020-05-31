@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PremiereGlobal/stim/pkg/stimlog"
@@ -48,6 +49,7 @@ type stream struct {
 	terminate       chan struct{}
 	done            chan struct{}
 	log             stimlog.StimLogger
+	mutex           sync.RWMutex
 }
 
 func newStream(p *program, path string, conf streamConf) (*stream, error) {
@@ -75,18 +77,13 @@ func newStream(p *program, path string, conf streamConf) (*stream, error) {
 		}
 	}
 
-	proto, err := func() (streamProtocol, error) {
-		switch conf.Protocol {
-		case "udp":
-			return _STREAM_PROTOCOL_UDP, nil
-
-		case "tcp":
-			return _STREAM_PROTOCOL_TCP, nil
-		}
-		return streamProtocol(0), fmt.Errorf("unsupported protocol: '%v'", conf.Protocol)
-	}()
-	if err != nil {
-		return nil, err
+	var proto = _STREAM_PROTOCOL_UDP
+	if conf.Protocol == "udp" {
+		proto = _STREAM_PROTOCOL_UDP
+	} else if conf.Protocol == "tcp" {
+		proto = _STREAM_PROTOCOL_TCP
+	} else {
+		return nil, fmt.Errorf("unsupported protocol: '%v'", conf.Protocol)
 	}
 
 	s := &stream{
@@ -105,9 +102,29 @@ func newStream(p *program, path string, conf streamConf) (*stream, error) {
 }
 
 func (s *stream) GetState() streamState {
-	s.p.tcpl.mutex.Lock()
-	defer s.p.tcpl.mutex.Unlock()
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	return s.state
+}
+
+func (s *stream) GetPath() string {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.path
+}
+
+func (s *stream) SetState(ss streamState) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.state = ss
+}
+
+func (s *stream) SetSDP(clientSdpParsed *sdp.Message, serverSdpParsed *sdp.Message, serverSdpText []byte) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.clientSdpParsed = clientSdpParsed
+	s.serverSdpText = serverSdpText
+	s.serverSdpParsed = serverSdpParsed
 }
 
 func (s *stream) run() {
@@ -118,7 +135,7 @@ func (s *stream) run() {
 		}
 	}
 
-	close(s.done)
+	s.close()
 }
 
 func (s *stream) do() bool {
@@ -154,22 +171,17 @@ func (s *stream) do() bool {
 		return true
 	}
 	defer nconn.Close()
+	user := ""
+	pass := ""
+	if s.ur.User != nil {
+		user = s.ur.User.Username()
+		pass, _ = s.ur.User.Password()
+	}
 
 	conn, err := gortsplib.NewConnClient(gortsplib.ConnClientConf{
-		NConn: nconn,
-		Username: func() string {
-			if s.ur.User != nil {
-				return s.ur.User.Username()
-			}
-			return ""
-		}(),
-		Password: func() string {
-			if s.ur.User != nil {
-				pass, _ := s.ur.User.Password()
-				return pass
-			}
-			return ""
-		}(),
+		NConn:        nconn,
+		Username:     user,
+		Password:     pass,
 		ReadTimeout:  s.p.readTimeout,
 		WriteTimeout: s.p.writeTimeout,
 	})
@@ -234,15 +246,7 @@ func (s *stream) do() bool {
 
 	// create a filtered SDP that is used by the server (not by the client)
 	serverSdpParsed, serverSdpText := gortsplib.SDPFilter(clientSdpParsed, res.Content)
-
-	func() {
-		s.p.tcpl.mutex.Lock()
-		defer s.p.tcpl.mutex.Unlock()
-
-		s.clientSdpParsed = clientSdpParsed
-		s.serverSdpText = serverSdpText
-		s.serverSdpParsed = serverSdpParsed
-	}()
+	s.SetSDP(clientSdpParsed, serverSdpParsed, serverSdpText)
 
 	if s.proto == _STREAM_PROTOCOL_UDP {
 		return s.runUdp(conn)
@@ -268,50 +272,45 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 		var rtcpPort int
 		var udplRtp *streamUdpListener
 		var udplRtcp *streamUdpListener
-		func() {
-			for {
-				// choose two consecutive ports in range 65536-10000
-				// rtp must be pair and rtcp odd
-				rtpPort = (rand.Intn((65535-10000)/2) * 2) + 10000
-				rtcpPort = rtpPort + 1
+		for {
+			// choose two consecutive ports in range 65536-10000
+			// rtp must be pair and rtcp odd
+			rtpPort = (rand.Intn((65535-10000)/2) * 2) + 10000
+			rtcpPort = rtpPort + 1
 
-				var err error
-				udplRtp, err = newStreamUdpListener(s.p, rtpPort)
-				if err != nil {
-					continue
-				}
-
-				udplRtcp, err = newStreamUdpListener(s.p, rtcpPort)
-				if err != nil {
-					udplRtp.close()
-					continue
-				}
-
-				return
+			var err error
+			udplRtp, err = newStreamUdpListener(s.p, rtpPort)
+			if err != nil {
+				continue
 			}
-		}()
+
+			udplRtcp, err = newStreamUdpListener(s.p, rtcpPort)
+			if err != nil {
+				udplRtp.close()
+				continue
+			}
+			break
+		}
+
+		ret := s.ur.Path
+
+		if len(ret) == 0 || ret[len(ret)-1] != '/' {
+			ret += "/"
+		}
+
+		control := media.Attributes.Value("control")
+		if control != "" {
+			ret += control
+		} else {
+			ret += "trackID=" + strconv.FormatInt(int64(i+1), 10)
+		}
 
 		res, err := conn.WriteRequest(&gortsplib.Request{
 			Method: gortsplib.SETUP,
 			Url: &url.URL{
-				Scheme: "rtsp",
-				Host:   s.ur.Host,
-				Path: func() string {
-					ret := s.ur.Path
-
-					if len(ret) == 0 || ret[len(ret)-1] != '/' {
-						ret += "/"
-					}
-
-					control := media.Attributes.Value("control")
-					if control != "" {
-						ret += control
-					} else {
-						ret += "trackID=" + strconv.FormatInt(int64(i+1), 10)
-					}
-
-					return ret
-				}(),
+				Scheme:   "rtsp",
+				Host:     s.ur.Host,
+				Path:     ret,
 				RawQuery: s.ur.RawQuery,
 			},
 			Header: gortsplib.Header{
@@ -400,24 +399,12 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 
 	tickerCheckStream := time.NewTicker(_CHECK_STREAM_INTERVAL)
 	defer tickerSendKeepalive.Stop()
-
-	func() {
-		s.p.tcpl.mutex.Lock()
-		defer s.p.tcpl.mutex.Unlock()
-		s.state = _STREAM_STATE_READY
-	}()
+	s.SetState(_STREAM_STATE_READY)
 
 	defer func() {
-		s.p.tcpl.mutex.Lock()
-		defer s.p.tcpl.mutex.Unlock()
-		s.state = _STREAM_STATE_STARTING
-
+		s.SetState(_STREAM_STATE_STARTING)
 		// disconnect all clients
-		for c := range s.p.tcpl.clients {
-			if c.path == s.path {
-				c.close()
-			}
-		}
+		s.p.tcpl.closeClientsOnPath(s.GetPath())
 	}()
 
 	s.log.Info("ready")
@@ -468,28 +455,24 @@ func (s *stream) runUdp(conn *gortsplib.ConnClient) bool {
 func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 	for i, media := range s.clientSdpParsed.Medias {
 		interleaved := fmt.Sprintf("interleaved=%d-%d", (i * 2), (i*2)+1)
+		ret := s.ur.Path
 
+		if len(ret) == 0 || ret[len(ret)-1] != '/' {
+			ret += "/"
+		}
+
+		control := media.Attributes.Value("control")
+		if control != "" {
+			ret += control
+		} else {
+			ret += "trackID=" + strconv.FormatInt(int64(i+1), 10)
+		}
 		res, err := conn.WriteRequest(&gortsplib.Request{
 			Method: gortsplib.SETUP,
 			Url: &url.URL{
-				Scheme: "rtsp",
-				Host:   s.ur.Host,
-				Path: func() string {
-					ret := s.ur.Path
-
-					if len(ret) == 0 || ret[len(ret)-1] != '/' {
-						ret += "/"
-					}
-
-					control := media.Attributes.Value("control")
-					if control != "" {
-						ret += control
-					} else {
-						ret += "trackID=" + strconv.FormatInt(int64(i+1), 10)
-					}
-
-					return ret
-				}(),
+				Scheme:   "rtsp",
+				Host:     s.ur.Host,
+				Path:     ret,
 				RawQuery: s.ur.RawQuery,
 			},
 			Header: gortsplib.Header{
@@ -543,24 +526,12 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 		s.log.Warn("PLAY returned code {} ({})", res.StatusCode, res.StatusMessage)
 		return true
 	}
-
-	func() {
-		s.p.tcpl.mutex.Lock()
-		defer s.p.tcpl.mutex.Unlock()
-		s.state = _STREAM_STATE_READY
-	}()
+	s.SetState(_STREAM_STATE_READY)
 
 	defer func() {
-		s.p.tcpl.mutex.Lock()
-		defer s.p.tcpl.mutex.Unlock()
-		s.state = _STREAM_STATE_STARTING
-
+		s.SetState(_STREAM_STATE_STARTING)
 		// disconnect all clients
-		for c := range s.p.tcpl.clients {
-			if c.path == s.path {
-				c.close()
-			}
-		}
+		s.p.tcpl.closeClientsOnPath(s.GetPath())
 	}()
 
 	s.log.Info("ready")
@@ -605,6 +576,11 @@ func (s *stream) runTcp(conn *gortsplib.ConnClient) bool {
 }
 
 func (s *stream) close() {
+	select {
+	case <-s.done:
+		return
+	default:
+	}
 	close(s.terminate)
-	<-s.done
+	close(s.done)
 }

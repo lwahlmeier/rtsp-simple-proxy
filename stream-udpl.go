@@ -49,11 +49,13 @@ func newStreamUdpListener(p *program, port int) (*streamUdpListener, error) {
 }
 
 func (l *streamUdpListener) close() {
-	l.nconn.Close()
-
-	if l.state == _UDPL_STATE_RUNNING {
-		<-l.done
+	select {
+	case <-l.done:
+		return
+	default:
 	}
+	l.nconn.Close()
+	close(l.done)
 }
 
 func (l *streamUdpListener) start() {
@@ -110,5 +112,4 @@ func (l *streamUdpListener) run() {
 
 	}
 
-	close(l.done)
 }
