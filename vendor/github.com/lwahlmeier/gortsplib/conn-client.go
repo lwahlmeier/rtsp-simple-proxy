@@ -196,7 +196,7 @@ func (c *ConnClient) WriteRequest(req *Request) (*Response, error) {
 	req.Header["CSeq"] = []string{strconv.FormatInt(int64(c.curCSeq), 10)}
 
 	c.conf.NConn.SetWriteDeadline(time.Now().Add(c.conf.WriteTimeout))
-	err := req.write(c.bw)
+	_, err := c.conn.Write([]byte(req.String()))
 	if err != nil {
 		return nil, err
 	}
@@ -239,12 +239,13 @@ func (c *ConnClient) ReadInterleavedFrame() (*InterleavedFrame, error) {
 	case fr := <-c.frameData:
 		return fr.Frame, fr.Error
 	case <-time.After(c.conf.ReadTimeout):
-		return nil, fmt.Errorf("rtsp read timeout")
+		return nil, fmt.Errorf("rtp read timeout")
 	}
 }
 
 // WriteInterleavedFrame writes an InterleavedFrame.
 func (c *ConnClient) WriteInterleavedFrame(frame *InterleavedFrame) error {
-	c.conf.NConn.SetWriteDeadline(time.Now().Add(c.conf.WriteTimeout))
-	return frame.write(c.conn)
+	c.conn.SetWriteDeadline(time.Now().Add(c.conf.WriteTimeout))
+	_, err := c.conn.Write(frame.ToBytes())
+	return err
 }

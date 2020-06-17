@@ -1,11 +1,7 @@
 package gortsplib
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
-	"strconv"
-	"strings"
 )
 
 // StatusCode is the status code of a RTSP response.
@@ -133,115 +129,14 @@ type Response struct {
 	Content []byte
 }
 
-func (r *Response) String() string {
-	return fmt.Sprintf("%d %s %s %s", r.StatusCode, r.StatusMessage, r.Header.String(), string(r.Content))
-}
-
-func readResponseFromBytes(hs []byte) (*Response, error) {
-	res := &Response{}
-	erhpos := bytes.Index(hs, []byte("\r\n"))
-	rh := strings.SplitN(string(hs[:erhpos]), " ", 3)
-	if len(rh) < 3 {
-		return nil, fmt.Errorf("unable to parse status code")
-	}
-	statusCode64, err := strconv.ParseInt(rh[1], 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("unable to parse status code")
-	}
-	res.StatusCode = StatusCode(statusCode64)
-	res.StatusMessage = rh[2]
-	ehpos := bytes.Index(hs, []byte(HEADER_END))
-	res.Header, err = readHeaderFromString(string(hs[erhpos+2 : ehpos]))
-	if err != nil {
-		return nil, err
-	}
-	cl, _ := res.Header.getContentLength()
-	if cl > 0 && cl <= len(hs)-ehpos+4 {
-		b := make([]byte, cl)
-		copy(b, hs[ehpos+4:ehpos+4+cl])
-		res.Content = b
-	}
-	return res, nil
-}
-
-func readResponse(br *bufio.Reader) (*Response, error) {
-	res := &Response{}
-
-	byts, err := readBytesLimited(br, ' ', 255)
-	if err != nil {
-		return nil, err
-	}
-	proto := string(byts[:len(byts)-1])
-
-	if proto != _RTSP_PROTO {
-		return nil, fmt.Errorf("expected '%s', got '%s'", _RTSP_PROTO, proto)
-	}
-
-	byts, err = readBytesLimited(br, ' ', 4)
-	if err != nil {
-		return nil, err
-	}
-	statusCodeStr := string(byts[:len(byts)-1])
-
-	statusCode64, err := strconv.ParseInt(statusCodeStr, 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("unable to parse status code")
-	}
-	res.StatusCode = StatusCode(statusCode64)
-
-	byts, err = readBytesLimited(br, '\r', 255)
-	if err != nil {
-		return nil, err
-	}
-	res.StatusMessage = string(byts[:len(byts)-1])
-
-	if len(res.StatusMessage) == 0 {
-		return nil, fmt.Errorf("empty status")
-	}
-
-	err = readByteEqual(br, '\n')
-	if err != nil {
-		return nil, err
-	}
-
-	res.Header, err = readHeader(br)
-	if err != nil {
-		return nil, err
-	}
-
-	res.Content, err = readContent(br, res.Header)
-	if err != nil {
-		return nil, err
-	}
-
-	return res, nil
-}
-
-func (res *Response) write(bw *bufio.Writer) error {
+func (res *Response) String() string {
 	if res.StatusMessage == "" {
 		if status, ok := statusMessages[res.StatusCode]; ok {
 			res.StatusMessage = status
 		}
 	}
-
-	_, err := bw.Write([]byte(_RTSP_PROTO + " " + strconv.FormatInt(int64(res.StatusCode), 10) + " " + res.StatusMessage + "\r\n"))
-	if err != nil {
-		return err
+	if len(res.Content) > 0 {
+		res.Header.setContentLength(len(res.Content))
 	}
-
-	if len(res.Content) != 0 {
-		res.Header["Content-Length"] = []string{strconv.FormatInt(int64(len(res.Content)), 10)}
-	}
-
-	err = res.Header.write(bw)
-	if err != nil {
-		return err
-	}
-
-	err = writeContent(bw, res.Content)
-	if err != nil {
-		return err
-	}
-
-	return bw.Flush()
+	return fmt.Sprintf(_RTSP_PROTO+" %d %s\r\n%s\r\n%s", res.StatusCode, res.StatusMessage, res.Header.String(), string(res.Content))
 }

@@ -59,6 +59,7 @@ type serverClient struct {
 	p              *program
 	conn           *gortsplib.ConnServer
 	state          clientState
+	remotePath     string
 	path           string
 	readAuth       *gortsplib.AuthServer
 	stream         *stream
@@ -79,11 +80,12 @@ func newServerClient(p *program, nconn net.Conn) *serverClient {
 			ReadTimeout:  p.readTimeout,
 			WriteTimeout: p.writeTimeout,
 		}),
-		state:  _CLIENT_STATE_STARTING,
-		write:  make(chan *gortsplib.InterleavedFrame, 100),
-		done:   make(chan struct{}),
-		log:    stimlog.GetLoggerWithPrefix("[RTSP client " + nconn.RemoteAddr().String() + "]"),
-		closed: false,
+		state:      _CLIENT_STATE_STARTING,
+		write:      make(chan *gortsplib.InterleavedFrame, 100),
+		done:       make(chan struct{}),
+		remotePath: nconn.RemoteAddr().String(),
+		log:        stimlog.GetLoggerWithPrefix("[RTSP client " + nconn.RemoteAddr().String() + "]"),
+		closed:     false,
 	}
 
 	p.tcpl.addServerClient(c)
@@ -91,6 +93,10 @@ func newServerClient(p *program, nconn net.Conn) *serverClient {
 	go c.run()
 
 	return c
+}
+
+func (c *serverClient) GetClientIP() string {
+	return c.remotePath
 }
 
 func (c *serverClient) GetClientInfo() (clientState, streamProtocol, []*track, string) {
@@ -130,6 +136,7 @@ func (c *serverClient) close() error {
 	default:
 		close(c.done)
 	}
+	c.log.Info("Closing Client")
 	c.p.tcpl.removeServerClient(c)
 	c.conn.NetConn().Close()
 	close(c.write)
@@ -476,7 +483,7 @@ func (c *serverClient) handleRequest(req *gortsplib.Request) bool {
 				_, err := c.conn.NetConn().Read(buf)
 				if err != nil {
 					if err != io.EOF {
-						c.log.Warn(err)
+						c.log.Warn("ReadWait: {}", err)
 					}
 					return false
 				}

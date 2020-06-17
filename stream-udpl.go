@@ -55,6 +55,7 @@ func (l *streamUdpListener) close() {
 	default:
 		close(l.done)
 	}
+
 	l.nconn.Close()
 }
 

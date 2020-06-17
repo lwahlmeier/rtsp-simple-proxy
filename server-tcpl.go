@@ -23,10 +23,9 @@ var skippedFrames = promauto.NewCounter(prometheus.CounterOpts{
 })
 
 type serverTcpListener struct {
-	p     *program
-	nconn *net.TCPListener
-	mutex sync.RWMutex
-	// clients map[*serverClient]struct{}
+	p       *program
+	nconn   *net.TCPListener
+	mutex   sync.RWMutex
 	clients sets.Set
 	done    chan struct{}
 	log     stimlog.StimLogger
@@ -58,6 +57,7 @@ func (l *serverTcpListener) addServerClient(sc *serverClient) {
 }
 func (l *serverTcpListener) removeServerClient(sc *serverClient) {
 	l.clients.Remove(sc)
+	l.log.Info("Removed Client:{} from server list", sc.GetClientIP())
 }
 
 func (l *serverTcpListener) closeClientsOnPath(path string) {

@@ -1,7 +1,8 @@
 package gortsplib
 
 import (
-	"bufio"
+	"bytes"
+	"fmt"
 	"net"
 	"time"
 )
@@ -31,9 +32,11 @@ type ConnServerConf struct {
 // ConnServer is a server-side RTSP connection.
 type ConnServer struct {
 	conf ConnServerConf
-	br   *bufio.Reader
-	bw   *bufio.Writer
-	conn net.Conn
+	// br   *bufio.Reader
+	// bw   *bufio.Writer
+	tmpBuffer         []byte
+	pendingReadBuffer bytes.Buffer
+	conn              net.Conn
 }
 
 // NewConnServer allocates a ConnClient.
@@ -53,9 +56,10 @@ func NewConnServer(conf ConnServerConf) *ConnServer {
 	conf.NConn.SetReadDeadline(time.Time{})
 	return &ConnServer{
 		conf: conf,
-		br:   bufio.NewReaderSize(conf.NConn, conf.ReadBufferSize),
-		bw:   bufio.NewWriterSize(conf.NConn, conf.ReadBufferSize),
-		conn: conf.NConn,
+		// br:   bufio.NewReaderSize(conf.NConn, conf.ReadBufferSize),
+		// bw:   bufio.NewWriterSize(conf.NConn, conf.ReadBufferSize),
+		tmpBuffer: make([]byte, 4096),
+		conn:      conf.NConn,
 	}
 }
 
@@ -66,23 +70,57 @@ func (s *ConnServer) NetConn() net.Conn {
 
 // ReadRequest reads a Request.
 func (s *ConnServer) ReadRequest() (*Request, error) {
-	return readRequest(s.br)
+	for {
+		n, err := s.conn.Read(s.tmpBuffer)
+		if err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			s.pendingReadBuffer.Write(s.tmpBuffer[:n])
+			for s.pendingReadBuffer.Len() > 0 {
+				tmpBuff := s.pendingReadBuffer.Bytes()
+				pos := bytes.Index(tmpBuff, []byte(HEADER_END))
+				if pos > -1 {
+					cl, err := getContentLength(string(tmpBuff[:pos]))
+					if err != nil {
+						return nil, err
+					}
+					if cl+pos+4 > len(tmpBuff) {
+						break
+					}
+					r, err := readRequestFromBytes(tmpBuff[:pos+4+cl])
+					if err != nil {
+						return nil, err
+					}
+					s.pendingReadBuffer.Next(cl + pos + 4)
+					return r, nil
+				} else if pos == -1 && s.pendingReadBuffer.Len() > 1024*16 {
+					return nil, fmt.Errorf("No RTSP header end after 16k")
+				} else {
+					break
+				}
+			}
+		}
+	}
+
 }
 
 // WriteResponse writes a response.
 func (s *ConnServer) WriteResponse(res *Response) error {
-	s.conf.NConn.SetWriteDeadline(time.Now().Add(s.conf.WriteTimeout))
-	return res.write(s.bw)
+	s.conn.SetWriteDeadline(time.Now().Add(s.conf.WriteTimeout))
+	_, err := s.conn.Write([]byte(res.String()))
+	return err
 }
 
 // ReadInterleavedFrame reads an InterleavedFrame.
 func (s *ConnServer) ReadInterleavedFrame() (*InterleavedFrame, error) {
 	s.conf.NConn.SetReadDeadline(time.Now().Add(s.conf.ReadTimeout))
-	return readInterleavedFrame(s.conf.NConn)
+	return readInterleavedFrame(s.conn)
 }
 
 // WriteInterleavedFrame writes an InterleavedFrame.
 func (s *ConnServer) WriteInterleavedFrame(frame *InterleavedFrame) error {
-	s.conf.NConn.SetWriteDeadline(time.Now().Add(s.conf.WriteTimeout))
-	return frame.write(s.conf.NConn)
+	s.conn.SetWriteDeadline(time.Now().Add(s.conf.WriteTimeout))
+	_, err := s.conn.Write(frame.ToBytes())
+	return err
 }

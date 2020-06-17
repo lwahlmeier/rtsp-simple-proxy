@@ -18,6 +18,7 @@ type serverUdpListener struct {
 	write chan *udpWrite
 	done  chan struct{}
 	log   stimlog.StimLogger
+	label string
 }
 
 func newServerUdpListener(p *program, port int, flow trackFlow) (*serverUdpListener, error) {
@@ -38,6 +39,7 @@ func newServerUdpListener(p *program, port int, flow trackFlow) (*serverUdpListe
 		p:     p,
 		nconn: nconn,
 		flow:  flow,
+		label: label,
 		write: make(chan *udpWrite, 100),
 		done:  make(chan struct{}),
 		log:   stimlog.GetLoggerWithPrefix("[UDP/" + label + " listener]"),
@@ -72,6 +74,7 @@ func (l *serverUdpListener) close() {
 	default:
 		close(l.done)
 	}
+	l.log.Info("Closing UDPL:{}", l.label)
 	l.nconn.Close()
 	close(l.write)
 

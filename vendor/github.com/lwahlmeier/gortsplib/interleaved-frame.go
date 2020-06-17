@@ -19,6 +19,16 @@ type InterleavedFrame struct {
 	Content []byte
 }
 
+func (f *InterleavedFrame) ToBytes() []byte {
+	bh := make([]byte, 4+len(f.Content))
+	bh[0] = 0x24
+	bh[1] = f.Channel
+	binary.BigEndian.PutUint16(bh[2:4], uint16(len(f.Content)))
+	copy(bh[4:], f.Content)
+
+	return bh
+}
+
 func readInterleavedFrame(r io.Reader) (*InterleavedFrame, error) {
 	var header [4]byte
 	_, err := io.ReadFull(r, header[:])
@@ -47,19 +57,4 @@ func readInterleavedFrame(r io.Reader) (*InterleavedFrame, error) {
 	}
 
 	return f, nil
-}
-
-func (f *InterleavedFrame) write(bw io.Writer) error {
-	bh := make([]byte, 4+len(f.Content))
-	bh[0] = 0x24
-	bh[1] = f.Channel
-	binary.BigEndian.PutUint16(bh[2:4], uint16(len(f.Content)))
-	copy(bh[4:], f.Content)
-
-	_, err := bw.Write(bh)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }

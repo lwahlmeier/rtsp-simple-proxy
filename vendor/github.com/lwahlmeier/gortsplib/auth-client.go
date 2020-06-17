@@ -26,14 +26,13 @@ type AuthClient struct {
 // NewAuthClient allocates an AuthClient.
 // header is the WWW-Authenticate header provided by the server.
 func NewAuthClient(header []string, user string, pass string) (*AuthClient, error) {
-	headerAuthDigest := func() string {
-		for _, v := range header {
-			if strings.HasPrefix(v, "Digest ") {
-				return v
-			}
+	headerAuthDigest := ""
+	for _, v := range header {
+		if strings.HasPrefix(v, "Digest ") {
+			headerAuthDigest = v
 		}
-		return ""
-	}()
+	}
+
 	if headerAuthDigest == "" {
 		return nil, fmt.Errorf("Authentication/Digest header not provided")
 	}
